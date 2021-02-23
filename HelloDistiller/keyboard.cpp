@@ -55,9 +55,9 @@ void ScanKbd()
 		if (KeyCode == 0) {
 			const int key = analogRead(PIN_LCD_KEYPAD);
 			
-			if (key >= 0)    KeyCode = 2;	// 0
-			if (key >= 90)   KeyCode = 4;   // 130
-			if (key >= 200)  KeyCode = 5;   // 300
+			if (key >= 0)    KeyCode = 2;	  // 0
+      if (key >= 130)  KeyCode = 5;   // 300
+			if (key >= 300)   KeyCode = 4;  // 130
 			if (key >= 400)  KeyCode = 3;   // 485
 			if (key >= 600)  KeyCode = 1;   // 720
 			if (key >= 850) KeyCode = 0;   
