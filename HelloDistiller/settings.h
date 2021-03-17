@@ -60,8 +60,8 @@
 
 
 // Поскольку у людей разные экраны, то лучше мы сделаем тут макрос
-#define LCD_WIDTH  16
-#define LCD_HEIGHT 2
+#define LCD_WIDTH  20
+#define LCD_HEIGHT 4
 
 // предполагаем 2 байта на символ, в международной кодировке (UTF8 может быть 1-4 байта на символ)
 #define LCD_BUFFER_SIZE  (LCD_WIDTH*2+2)

@@ -54,7 +54,7 @@ void ScanKLP()
       if (SIMPLED_VERSION!=5 && SIMPLED_VERSION!=20)
       {
         lcd.clear();
-        lcd.print(F("KLP NPG ON"));
+        lcd.print(F("K\273a\276a\275 H\250\241 > BK\247."));      //Клапан НБК > ВКЛ.
         for(i=0;i<KPL_OPEN_TIME;i++)
         { 
           digitalWrite(PIN_KLP_BEG+KLP_NPG,KLP_HIGH);
@@ -66,7 +66,7 @@ void ScanKLP()
     }
 
     lcd.clear();
-    lcd.print(F("KLP VODA ON"));
+    lcd.print(F("K\273a\276a\275 BO\340\256 > BK\247."));        //Клапан ВОДЫ > ВКЛ.
     time3=10;
     for(i=0;i<KPL_OPEN_TIME;i++)
     { 
@@ -74,7 +74,9 @@ void ScanKLP()
       delay(1);
     }
     lcd.clear();
-    lcd.print(F("KLP HLD DIST ON"));
+    lcd.print(F("K\273a\276a\275 XO\247O\340\245\247\304H\245KA"));  //Клапан ХОЛОДИЛЬНИКА 
+    lcd.setCursor(0,1);
+    lcd.print(F("\343\270c\277\270\273\273\307\277opa > BK\247."));  //дистиллятора > ВКЛ.
     for(i=0;i<KPL_OPEN_TIME;i++)
     { 
       digitalWrite(PIN_KLP_BEG+KLP_HLD,KLP_HIGH);
@@ -86,7 +88,7 @@ void ScanKLP()
   }
 
   lcd.clear();
-  lcd.print(F("KLP DEFL ON"));
+  lcd.print(F("K\273a\276a\275 \340E\252\247-PA > BK\247"));        //Клапан ДЕФЛ-РА > ВКЛ.
   for(i=0;i<KPL_OPEN_TIME;i++)
   { 
     digitalWrite(PIN_KLP_BEG+KLP_DEFL,KLP_HIGH);
@@ -97,7 +99,9 @@ void ScanKLP()
   }
 
   lcd.clear();
-  lcd.print(F("KLP GLV HVST ON"));
+  lcd.print(F("K\273a\276a\275 \241O\247OB \270"));           //Клапан ГОЛОВ и
+  lcd.setCursor(0,1);
+  lcd.print(F("XBOCTOB > BK\247."));                          //ХВОСТОВ > ВКЛ.
   for(i=0;i<KPL_OPEN_TIME;i++)
   { 
     digitalWrite(PIN_KLP_BEG+KLP_GLV_HVS,KLP_HIGH);
@@ -108,7 +112,7 @@ void ScanKLP()
   }
 
   lcd.clear();
-  lcd.print(F("KLP SR ON"));
+  lcd.print(F("K\273a\276a\275 C\250\245PTA > BK\247."));     //Клапан СПИРТА > ВКЛ.
   for(i=0;i<KPL_OPEN_TIME;i++)
   { 
     digitalWrite(PIN_KLP_BEG+KLP_SR,KLP_HIGH);
@@ -119,7 +123,7 @@ void ScanKLP()
   }
 #else
   lcd.clear();
-  lcd.print(F("KLP DEFL ON"));
+  lcd.print(F("K\273a\276a\275 \340E\252\247-PA > BK\247"));    //Клапан ДЕФЛ-РА > ВКЛ.
   for(i=0;i<KPL_OPEN_TIME;i++)
   { 
     digitalWrite(PIN_KLP_BEG+KLP_DEFL+KLP_DEFL,KLP_HIGH);
@@ -130,7 +134,9 @@ void ScanKLP()
   }
 
   lcd.clear();
-  lcd.print(F("KLP GLV HVST ON"));
+  lcd.print(F("K\273a\276a\275 \241O\247OB \270"));             //Клапан ГОЛОВ и
+  lcd.setCursor(0,1);
+  lcd.print(F("XBOCTOB > BK\247."));                            //ХВОСТОВ > ВКЛ.
   for(i=0;i<KPL_OPEN_TIME;i++)
   { 
     digitalWrite(PIN_KLP_BEG+KLP_GLV_HVS+KLP_GLV_HVS,KLP_HIGH);
@@ -141,7 +147,7 @@ void ScanKLP()
   }
 
   lcd.clear();
-  lcd.print(F("KLP SR ON"));
+  lcd.print(F("K\273a\276a\275 C\250\245PTA > BK\247."));       //Клапан СПИРТА > ВКЛ.
   for(i=0;i<KPL_OPEN_TIME;i++)
   { 
     digitalWrite(PIN_KLP_BEG+KLP_SR+KLP_SR,KLP_HIGH);
@@ -189,7 +195,7 @@ void ProcessTestKLP()
       // Клапан дефлегматора откырт
       KlOpen[KLP_DEFL]=KlOpen[KLP_VODA];
       KlClose[KLP_DEFL]=KlClose[KLP_VODA];
-      // Клапан отбора спирта откырт
+      // Клапан отбора голов и хвостов откырт
       KlOpen[KLP_GLV_HVS]=KlOpen[KLP_VODA];
       KlClose[KLP_GLV_HVS]=KlClose[KLP_VODA];
       // Клапан отбора спирта откырт
