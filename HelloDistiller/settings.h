@@ -32,7 +32,7 @@
 									// NB! Это оригинальная реализация WiFi, не зависящая от MQTT и работающая с проприетарным сервером
 
 #define MQTT_SERIAL				 Serial3  // Порт, к которому подключена ESP, важно, чтобы не пересекалось с GSM_SERIAL
-#define MQTT_SERIAL_BAUDRATE	 57600   // Ставим максимальную, при которой еще нет ошибок связи
+#define MQTT_SERIAL_BAUDRATE	 115200   // Ставим максимальную, при которой еще нет ошибок связи
 #define USE_MQTT_BROKER          1  // MQTT protocol by max506 & limon
                                     // В этом режиме для ESP надо использовать прошивку от limon или мою
 
