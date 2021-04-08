@@ -289,7 +289,7 @@ void DisplayRectif()
 			sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OT\240OP C\250\245PT"), hour, minute, second);                            //00:00:00 ОТБОР СПИРТ                  
 			my_lcdprint(lcd_buffer);
       lcd.setCursor(0,3);
-      sprintf_P(lcd_buffer, PSTR("\340a\263\273=%i.%i,Mo\346\275=%4iW"), U_MPX5010/10, U_MPX5010%10, UstPower);  
+      sprintf_P(lcd_buffer, PSTR("\340a\263\273=%i.%i,Mo\346\275=%4iW"), U_MPX5010/10, U_MPX5010%10, FactPower);  
       my_lcdprint(lcd_buffer);                                                                                             //Давл=    ,Мощн=
       lcd.setCursor(0,2);
       sprintf_P(lcd_buffer, PSTR("PK(20)=%i.%i/%i.%i %i.%i"), DS_TEMP(TEMP_RK20)/10, DS_TEMP(TEMP_RK20)%10, (tStabSR + tDeltaRect)/10, (tStabSR + tDeltaRect)%10, tDeltaRect/10, tDeltaRect%10);                           
