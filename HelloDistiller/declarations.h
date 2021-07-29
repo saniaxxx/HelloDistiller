@@ -1,7 +1,6 @@
 // Последнее обновление 2018-02-21 by Phisik
 // Описание переменных разделяемых между файлами
 
-
 // HD.ino
 #define MY_TX_BUFFER_SIZE 70
 #define MY_RX_BUFFER_SIZE 70
@@ -27,7 +26,7 @@ extern unsigned int KlOpen[MAX_KLP];
 extern unsigned int KlClose[MAX_KLP];
 extern unsigned int BeepTime;
 extern unsigned int KlCount[MAX_KLP];
-extern unsigned int ipPort ;
+extern unsigned int ipPort;
 // extern unsigned int tableSQ[MAX_TABLE_SQRT];
 extern unsigned char zPSOut;
 extern unsigned char zPS;
@@ -52,11 +51,11 @@ extern unsigned char AddPressKeys10;
 extern unsigned char timeWaitGPRS;
 extern unsigned char timeRefrServer;
 extern unsigned char timeGPRS;
-extern unsigned char ip[4] ;
-extern unsigned char idDevice[11] ;
+extern unsigned char ip[4];
+extern unsigned char idDevice[11];
 extern unsigned char flGPRSState;
-extern unsigned char WiFiPass[12] ;
-extern unsigned char WiFiAP[12] ;
+extern unsigned char WiFiPass[12];
+extern unsigned char WiFiAP[12];
 extern unsigned char PeriodRefrServer;
 extern unsigned char IspReg;
 // extern unsigned char tableSQRT[MAX_TABLE_SQRT];
@@ -83,8 +82,8 @@ extern int tEndRectOtbGlv;
 extern int tEndRect;
 extern int tEndDistDefl;
 #if ADJUST_COLUMN_STAB_TEMP
-	extern float lastStableT;
-	extern long SecTempPrev2;
+extern float lastStableT;
+extern long SecTempPrev2;
 #endif
 extern int resultU;
 extern int prev_index_input;
@@ -172,7 +171,7 @@ extern char flNeedTemp;
 extern char flNeedScanKbd;
 extern char flNeedReadAlarm;
 extern char flNeedAnalyse;
-extern char flCorrASC712 ;
+extern char flCorrASC712;
 extern char flAutoDetectPowerTEN;
 extern char flAllOff;
 extern char flAlarmUroven;
@@ -211,7 +210,7 @@ extern char CountGasSensor;
 extern char CountFractionRect;
 extern char CountFractionDist;
 extern char CountAlarmMPX5010;
-extern char CorrectASC712 ;
+extern char CorrectASC712;
 extern char CntPeriod;
 extern char CntPause;
 extern char CntCHIM;
@@ -224,7 +223,7 @@ extern char BeepKeyPress;
 extern char BeepEndProcess;
 extern char DispPage;
 extern char pdu_phone[14];
-extern char my_phone[13] ;
+extern char my_phone[13];
 extern char lastSMSState;
 extern char SMSOnCall;
 extern char stateAfterDelete;
@@ -238,23 +237,17 @@ extern char ds1820_popr[MAX_DS1820];
 extern char ds1820_flread[MAX_DS1820];
 extern char NumErrDs18;
 extern char CntErrPower;
-extern int  deltaPower;
+extern int deltaPower;
 extern const char my_version[];
-extern int U_VODA,U_UROVEN,U_GAS,U_NPG,U_GLV; // Уровни воды, газа, НПГ, голов
-
+extern int U_VODA, U_UROVEN, U_GAS, U_NPG, U_GLV; // Уровни воды, газа, НПГ, голов
 
 extern volatile bool bLCDclearFlag;
 
 #if USE_I2C_LCD
-	extern LiquidCrystal_I2C lcd;	
+extern LiquidCrystal_I2C lcd;
 #else
-	extern LiquidCrystal lcd;
+extern LiquidCrystal lcd;
 #endif // USE_I2C_LCD
-
-
-
-
-
 
 extern OneWire ds;
 
@@ -263,7 +256,7 @@ void my_beep(unsigned int mBeepTime);
 void CloseAllKLP();
 void SetAngle(unsigned char Angl);
 void zero_cross_int();
-void my_lcdprint(char *s);
+void my_lcdprint(char* s);
 void GetPhonePDU();
 void ReadAlarm();
 void OpenKLP();
@@ -289,12 +282,11 @@ void RaspredPowerByPhase();
 void ProcessPIDTemp(int NeedTemp, int FactTemp);
 void ProcessPIDPress(int NeedTemp, int FactTemp);
 char GetCHIMOtbor();
-float  my_sqrt(unsigned long tsQT);
+float my_sqrt(unsigned long tsQT);
 void ScanDS18b20Slave();
 void fillTableData();
 
-
-extern unsigned char b_size[3];  // Размер брезинхема
+extern unsigned char b_size[3]; // Размер брезинхема
 extern unsigned char b_value[3]; // Текущее значение алгоритма
 extern int b_error[3]; // Переменная
 extern unsigned char b_stepNumber[3]; // Номер шага
@@ -304,9 +296,8 @@ boolean bresenham_getNext(char n);
 
 void ProcessNPG();
 
-
 // eeprom.cpp
-extern unsigned int  ee_addr;
+extern unsigned int ee_addr;
 unsigned char eeReadChar();
 void eeWriteChar(char p_value);
 void eeWriteInt(int p_value);
@@ -314,47 +305,44 @@ unsigned int eeReadInt();
 void readEEPROM();
 void writeEEPROM();
 
-
-
 // keyboard.cpp
 void ScanKbd();
 
 // mqtt.cpp
 #if USE_MQTT_BROKER
 
-	#define MQTT_BUFFER_SIZE 50
+#define MQTT_BUFFER_SIZE 50
 
-    extern char lcd_mqtt_buf1[LCD_BUFFER_SIZE];
-    extern char lcd_mqtt_buf2[LCD_BUFFER_SIZE];
-    extern char buf_pmem[LCD_BUFFER_SIZE];
-    extern PROGMEM const char fmt_lcd1[];
-    extern PROGMEM const char fmt_lcd2[];
+extern char lcd_mqtt_buf1[LCD_BUFFER_SIZE];
+extern char lcd_mqtt_buf2[LCD_BUFFER_SIZE];
+extern char buf_pmem[LCD_BUFFER_SIZE];
+extern PROGMEM const char fmt_lcd1[];
+extern PROGMEM const char fmt_lcd2[];
 
-    void mqttSerialPrint(char*);
-    bool mqttSendStatus();
-    void handleMqttSerial();
-    void initMqtt();
+void mqttSerialPrint(char*);
+bool mqttSendStatus();
+void handleMqttSerial();
+void initMqtt();
 #endif
 
 #ifdef DEBUG
-  void my_debug();
+void my_debug();
 #endif
 
-
 #if ENABLE_SENSOR_SORTING
-	extern uint8_t	ds1820_nums[MAX_DS1820];
-	#define DS_TEMP(i)		temps[ds1820_nums[i]]
-	#define MAX_DS_TEMP(i)	MaxTemps[ds1820_nums[i]]
+extern uint8_t ds1820_nums[MAX_DS1820];
+#define DS_TEMP(i) temps[ds1820_nums[i]]
+#define MAX_DS_TEMP(i) MaxTemps[ds1820_nums[i]]
 #else
-	#define DS_TEMP(i)		temps[i]
-	#define MAX_DS_TEMP(i)	MaxTemps[i]
+#define DS_TEMP(i) temps[i]
+#define MAX_DS_TEMP(i) MaxTemps[i]
 #endif
 
 #if USE_BMP280_SENSOR
-  extern Adafruit_BMP280 bmp; // I2C
+extern Adafruit_BMP280 bmp; // I2C
 
-  extern int PressAtm;
-  extern unsigned char flReadPress;
-  extern unsigned char timePressAtm;
-  extern char ds1820_poprPress[MAX_DS1820];                  // Поправки к температуре датчиков
+extern int PressAtm;
+extern unsigned char flReadPress;
+extern unsigned char timePressAtm;
+extern char ds1820_poprPress[MAX_DS1820]; // Поправки к температуре датчиков
 #endif
