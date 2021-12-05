@@ -59,7 +59,7 @@ void loop()
     }
 
     if (bLCDclearFlag) {
-        lcd.clear();
+        dirtyTrickLcdClear();
         bLCDclearFlag = false;
     }
 
@@ -813,8 +813,9 @@ void loop()
                 DEBUG_SERIAL.print(F("TekPower2="));
                 DEBUG_SERIAL.println(TekPower);
 #endif
-                FactPower = (TekPower * 20) / R_TEN20; // Определили фактическую мощность в зависимости от сопротивления ТЭНа
+                // FactPower=(TekPower*20)/R_TEN20; // Определили фактическую мощность в зависимости от сопротивления ТЭНа
 
+                FactPower = (1 - POWER_SMOOTHING_FACTOR) * FactPower + POWER_SMOOTHING_FACTOR * (TekPower * 20) / R_TEN20;
             } else {
                 // Здесь определили квадрат тока умноженный на 10.
                 SqNaprPrev = SqNaprT * 100 / ((unsigned long)index_input * SENSITIVE_ASC712);
@@ -832,7 +833,7 @@ void loop()
                 }
 
                 FindPower = (long)SqNaprPrev * R_TEN20 / (20 * SENSITIVE_ASC712);
-                FactPower = FindPower;
+                FactPower = (1 - POWER_SMOOTHING_FACTOR) * FactPower + POWER_SMOOTHING_FACTOR * FindPower;
 
 #ifdef TESTRM
                 DEBUG_SERIAL.print(F("SqNaprT="));

@@ -54,8 +54,8 @@ void ScanKLP()
     int i;
 #if SIMPLED_VERSION < 30
     if (SIMPLED_VERSION != 5 && SIMPLED_VERSION != 20) {
-        lcd.clear();
-        lcd.print(F("K\273a\276a\275 H\250\241 > BK\247.")); //Клапан НБК > ВКЛ.
+        dirtyTrickLcdClear();
+        my_lcdprint_P(PSTR("Kлaпaн HПГ > BKЛ.")); //Клапан НБК > ВКЛ.
         for (i = 0; i < KPL_OPEN_TIME; i++) {
             digitalWrite(PIN_KLP_BEG + KLP_NPG, KLP_HIGH);
             delay(1);
@@ -64,17 +64,17 @@ void ScanKLP()
 #endif
         }
 
-        lcd.clear();
-        lcd.print(F("K\273a\276a\275 BO\340\256 > BK\247.")); //Клапан ВОДЫ > ВКЛ.
+        dirtyTrickLcdClear();
+        my_lcdprint_P(PSTR("Kлaпaн BOДЫ > BKЛ.")); //Клапан ВОДЫ > ВКЛ.
         time3 = 10;
         for (i = 0; i < KPL_OPEN_TIME; i++) {
             digitalWrite(PIN_KLP_BEG + KLP_VODA, KLP_HIGH);
             delay(1);
         }
-        lcd.clear();
-        lcd.print(F("K\273a\276a\275 XO\247O\340\245\247\304H\245KA")); //Клапан ХОЛОДИЛЬНИКА
-        lcd.setCursor(0, 1);
-        lcd.print(F("\343\270c\277\270\273\273\307\277opa > BK\247.")); //дистиллятора > ВКЛ.
+        dirtyTrickLcdClear();
+        my_lcdprint_P(PSTR("Kлaпaн XOЛOДИЛьHИKA")); //Клапан ХОЛОДИЛЬНИКА
+        dirtyTrickSetCursor(0, 1);
+        my_lcdprint_P(PSTR("диcтиллятopa > BKЛ.")); //дистиллятора > ВКЛ.
         for (i = 0; i < KPL_OPEN_TIME; i++) {
             digitalWrite(PIN_KLP_BEG + KLP_HLD, KLP_HIGH);
             delay(1);
@@ -84,8 +84,8 @@ void ScanKLP()
         }
     }
 
-    lcd.clear();
-    lcd.print(F("K\273a\276a\275 \340E\252\247-PA > BK\247")); //Клапан ДЕФЛ-РА > ВКЛ.
+    dirtyTrickLcdClear();
+    my_lcdprint_P(PSTR("Kлaпaн ДEФЛ-PA > BKЛ")); //Клапан ДЕФЛ-РА > ВКЛ.
     for (i = 0; i < KPL_OPEN_TIME; i++) {
         digitalWrite(PIN_KLP_BEG + KLP_DEFL, KLP_HIGH);
         delay(1);
@@ -94,10 +94,10 @@ void ScanKLP()
 #endif
     }
 
-    lcd.clear();
-    lcd.print(F("K\273a\276a\275 \241O\247OB \270")); //Клапан ГОЛОВ и
-    lcd.setCursor(0, 1);
-    lcd.print(F("XBOCTOB > BK\247.")); //ХВОСТОВ > ВКЛ.
+    dirtyTrickLcdClear();
+    my_lcdprint_P(PSTR("Kлaпaн ГOЛOB и")); //Клапан ГОЛОВ и
+    dirtyTrickSetCursor(0, 1);
+    my_lcdprint_P(PSTR("XBOCTOB > BKЛ.")); //ХВОСТОВ > ВКЛ.
     for (i = 0; i < KPL_OPEN_TIME; i++) {
         digitalWrite(PIN_KLP_BEG + KLP_GLV_HVS, KLP_HIGH);
         delay(1);
@@ -106,8 +106,8 @@ void ScanKLP()
 #endif
     }
 
-    lcd.clear();
-    lcd.print(F("K\273a\276a\275 C\250\245PTA > BK\247.")); //Клапан СПИРТА > ВКЛ.
+    dirtyTrickLcdClear();
+    my_lcdprint_P(PSTR("Kлaпaн CПИPTA > BKЛ.")); //Клапан СПИРТА > ВКЛ.
     for (i = 0; i < KPL_OPEN_TIME; i++) {
         digitalWrite(PIN_KLP_BEG + KLP_SR, KLP_HIGH);
         delay(1);
@@ -116,8 +116,8 @@ void ScanKLP()
 #endif
     }
 #else
-    lcd.clear();
-    lcd.print(F("K\273a\276a\275 \340E\252\247-PA > BK\247")); //Клапан ДЕФЛ-РА > ВКЛ.
+    dirtyTrickLcdClear();
+    my_lcdprint_P(PSTR("Kлaпaн ДEФЛ-PA > BKЛ")); //Клапан ДЕФЛ-РА > ВКЛ.
     for (i = 0; i < KPL_OPEN_TIME; i++) {
         digitalWrite(PIN_KLP_BEG + KLP_DEFL + KLP_DEFL, KLP_HIGH);
         delay(1);
@@ -126,10 +126,10 @@ void ScanKLP()
 #endif
     }
 
-    lcd.clear();
-    lcd.print(F("K\273a\276a\275 \241O\247OB \270")); //Клапан ГОЛОВ и
-    lcd.setCursor(0, 1);
-    lcd.print(F("XBOCTOB > BK\247.")); //ХВОСТОВ > ВКЛ.
+    dirtyTrickLcdClear();
+    my_lcdprint_P(PSTR("Kлaпaн ГOЛOB и")); //Клапан ГОЛОВ и
+    dirtyTrickSetCursor(0, 1);
+    my_lcdprint_P(PSTR("XBOCTOB > BKЛ.")); //ХВОСТОВ > ВКЛ.
     for (i = 0; i < KPL_OPEN_TIME; i++) {
         digitalWrite(PIN_KLP_BEG + KLP_GLV_HVS + KLP_GLV_HVS, KLP_HIGH);
         delay(1);
@@ -138,8 +138,8 @@ void ScanKLP()
 #endif
     }
 
-    lcd.clear();
-    lcd.print(F("K\273a\276a\275 C\250\245PTA > BK\247.")); //Клапан СПИРТА > ВКЛ.
+    dirtyTrickLcdClear();
+    my_lcdprint_P(PSTR("Kлaпaн CПИPTA > BKЛ.")); //Клапан СПИРТА > ВКЛ.
     for (i = 0; i < KPL_OPEN_TIME; i++) {
         digitalWrite(PIN_KLP_BEG + KLP_SR + KLP_SR, KLP_HIGH);
         delay(1);

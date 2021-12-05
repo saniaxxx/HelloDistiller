@@ -335,52 +335,55 @@ void setup()
     } // if (DS18B20_PRESET_NUM>0)
 #endif
 
-    lcd.clear();
+    dirtyTrickLcdClear();
 #ifdef DEBUG
     ds1820_devices = 3;
-    sprintf_P(lcd_buffer, PSTR("O\277\273a\343\272a=%u"), ds1820_devices); //Отладка=
+    sprintf_P(lcd_buffer, PSTR("Oтлaдкa = %u"), ds1820_devices); //Отладка=
 #else
-    sprintf_P(lcd_buffer, PSTR("ds18B20 \276o\343\272\273\306\300e\275o-%u"), (int)ds1820_devices); //подключено-
+    //sprintf_P(lcd_buffer,PSTR("DS18B20 Найдено - %u"),(int) ds1820_devices);               //21.04.21 подключено-
+    sprintf_P(lcd_buffer, PSTR("Аппаратная поддержка"));
 #endif
 
     my_lcdprint(lcd_buffer);
-    sprintf_P(lcd_buffer, PSTR("\251po\263\275\307(%i),Po\267\273\270\263a(%i)"), USE_ALARM_UROVEN, USE_ALARM_VODA); //Уровня(), Розлива()
+    sprintf_P(lcd_buffer, PSTR("Д.Давл.-2, Насос НБК")); //21.04.21 ("Уровня(%i),Розлива(%i)"), USE_ALARM_UROVEN, USE_ALARM_VODA);
+    dirtyTrickSetCursor(0, 3);
     my_lcdprint(lcd_buffer);
-    lcd.setCursor(0, 3);
-    sprintf_P(lcd_buffer, PSTR("\250po\263o\343.(%i),\250o\276p.(%1i)"), UrovenProvodimostSR, (int)nPopr); //Провод.(), Попр.()
+
+    sprintf_P(lcd_buffer, PSTR("Клапаны-3,Д.Уровня-3")); //21.04.21 ("Пpoвoд.(%i),Пoпp.(%1i)"), UrovenProvodimostSR, (int)nPopr);
+    dirtyTrickSetCursor(0, 2);
     my_lcdprint(lcd_buffer);
-    lcd.setCursor(0, 2);
-    sprintf_P(lcd_buffer, PSTR("\245c\276o\273\304-\275\270e \343a\277\300\270\272o\263:"), USE_ALARM_UROVEN); //Исполь-ние датчиков:
-    nPopr = 0;
-    lcd.setCursor(0, 1);
+
+    sprintf_P(lcd_buffer, PSTR("DS18B20 Найдено - %u"), (int)ds1820_devices); //21.04.21 ("Иcпoль-ниe дaтчикoв:"), USE_ALARM_UROVEN);
+    //nPopr=0;  21.04.21
+    dirtyTrickSetCursor(0, 1);
     my_lcdprint(lcd_buffer);
     delay(4000);
 
-    lcd.clear();
-    sprintf_P(lcd_buffer, PSTR("Bepc\270\307(%s) RWR=%i"), my_version, PR_REWRITE_EEPROM); //Версия() RWR=
+    dirtyTrickLcdClear();
+    sprintf_P(lcd_buffer, PSTR("Bepcия(%s) RWR=%i"), my_version, PR_REWRITE_EEPROM); //Версия() RWR=
     my_lcdprint(lcd_buffer);
-    lcd.setCursor(0, 1);
+    dirtyTrickSetCursor(0, 1);
 
 #ifndef USE_SLAVE
     my_lcdprint(lcd_buffer);
-    lcd.setCursor(0, 3);
+    dirtyTrickSetCursor(0, 3);
     sprintf_P(lcd_buffer, PSTR(" <<HelloDistiller>> ")); //<<HelloDistiller>>
     my_lcdprint(lcd_buffer);
-    lcd.setCursor(0, 1);
-    sprintf_P(lcd_buffer, PSTR("Ko\275\344\270\264\171pa\345\270\307(%u)"), SIMPLED_VERSION); //Конфигурация()
+    dirtyTrickSetCursor(0, 1);
+    sprintf_P(lcd_buffer, PSTR("  Koнфигуpaция(%u)"), SIMPLED_VERSION); //Конфигурация()
 
 #else
     my_lcdprint(lcd_buffer);
-    lcd.setCursor(0, 3);
+    dirtyTrickSetCursor(0, 3);
     sprintf_P(lcd_buffer, PSTR(" <<HelloDistiller>> ")); //<<HelloDistiller>>
     my_lcdprint(lcd_buffer);
-    lcd.setCursor(0, 1);
-    sprintf_P(lcd_buffer, PSTR("Ko\275\344\270\264\171pa-\307(%u) Slave"), SIMPLED_VERSION); //Конфигура-я() Slave
+    dirtyTrickSetCursor(0, 1);
+    sprintf_P(lcd_buffer, PSTR("Koнфигуpa-я(%u) Slave"), SIMPLED_VERSION); //Конфигура-я() Slave
 
 #endif
     my_lcdprint(lcd_buffer);
     delay(3000);
-    lcd.clear();
+    dirtyTrickLcdClear();
     flNeedTemp = 0;
     StepOut = 0;
 
@@ -413,23 +416,27 @@ void setup()
         timePressAtm = 25;
 
     if (timePressAtm >= 30) {
-        lcd.clear();
-        sprintf_P(lcd_buffer, PSTR("O\276poc bmp280...")); //Опрос bmp280...
-        lcd.setCursor(0, 0);
+        dirtyTrickLcdClear();
+        sprintf_P(lcd_buffer, PSTR("    Oпpoc BMP280")); //Опрос bmp280...
+        dirtyTrickSetCursor(0, 0);
         my_lcdprint(lcd_buffer);
 
-        if (!bmp.begin()) {
+        if (!bmp.begin(
+#ifdef BMP_SENSOR_ADDRESS
+                BMP_SENSOR_ADDRESS
+#endif
+                )) {
             //Serial.println("Could not find a valid BMP280 sensor, check wiring!");
             //Serial.println(bmp);
             timePressAtm = 25;
-            sprintf_P(lcd_buffer, PSTR("O\301\270\262\272a!")); //Ошибка!
+            sprintf_P(lcd_buffer, PSTR("       Oшибкa!")); //Ошибка!
         } else {
-            sprintf_P(lcd_buffer, PSTR("OK")); //OK
+            sprintf_P(lcd_buffer, PSTR("         OK!")); //OK
         }
-        lcd.setCursor(0, 1);
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         delay(1500);
-        lcd.clear();
+        dirtyTrickLcdClear();
     }
 #endif // USE_BPM
 

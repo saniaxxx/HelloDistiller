@@ -11,8 +11,8 @@
 #include <OneWire.h>
 
 #if USE_I2C_LCD
-#include <Wire.h>
 #include <LiquidCrystal_I2C.h>
+#include <Wire.h>
 #else
 #include <LiquidCrystal.h>
 #endif // USE_I2C_LCD

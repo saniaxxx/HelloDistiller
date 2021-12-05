@@ -33,8 +33,7 @@ bool FlagRefreshOnline = true; // признак необходимости об
 bool NeedRefresh = false; // признак необходимости обновления показаний дисплея
 bool extGenerator = false; // Генератор для проверки целостности линии связи автоматика-scada
 
-char lcd_mqtt_buf1[LCD_BUFFER_SIZE]; // первая строка экрана для отправки по MQTT
-char lcd_mqtt_buf2[LCD_BUFFER_SIZE]; // вторая строка экрана для отправки по MQTT
+char lcd_mqtt_buf[LCD_HEIGHT][LCD_BUFFER_SIZE]; // первая строка экрана для отправки по MQTT
 
 #ifndef MQTT_BUFFER_SIZE
 #define MQTT_BUFFER_SIZE 50
@@ -45,8 +44,7 @@ char lcd_mqtt_buf2[LCD_BUFFER_SIZE]; // вторая строка экрана �
 // ########################################################
 
 // оперативные данные
-PROGMEM const char fmt_lcd1[] = "lcd1=%s"; // первая строка дисплея
-PROGMEM const char fmt_lcd2[] = "lcd2=%s"; // вторая строка дисплея
+PROGMEM const char fmt_lcd_n[] = "lcd%d=%s"; // n-ая строка дисплея
 PROGMEM const char fmt_klpHLD[] = "klpHLD=%d"; // клапан холодильника (для дистилляции)
 PROGMEM const char fmt_klpDEFL[] = "klpDEFL=%d"; // клапан для подачи воды в дефлегматор
 PROGMEM const char fmt_klpGLV_HVS[] = "klpGLV_HVS=%d"; // клапан отбора головных и хвостовых фракций
@@ -241,6 +239,42 @@ void mqttSerialPrint(char* s)
     MQTT_SERIAL.println(s);
 }
 
+void handleValve(uint8_t valveId, char cmd)
+{
+    switch (cmd) {
+    case '0': // выключает клапан и разрешает автоматическое управление им
+        KlOpen[valveId] = 0;
+        KlClose[valveId] = 1000;
+        KlReg[valveId] = 0;
+
+        digitalWrite(PIN_KLP_BEG + valveId, !KLP_HIGH);
+        KlManualMode[valveId] = 0;
+        KlState[valveId] = 0;
+        break;
+    case '1': // включает клапан и разрешает автоматическое управление им
+        KlOpen[valveId] = 1000;
+        KlClose[valveId] = 0;
+        KlReg[valveId] = PEREGREV_ON;
+
+        digitalWrite(PIN_KLP_BEG + valveId, KLP_HIGH);
+        KlManualMode[valveId] = 0;
+        KlState[valveId] = 1;
+        break;
+    case '5': // выключает клапан и запрещает автоматическое управление им
+        // Внимание! Защита от перегрева отключается!
+        digitalWrite(PIN_KLP_BEG + valveId, !KLP_HIGH);
+        KlManualMode[valveId] = 1;
+        KlState[valveId] = 0;
+        break;
+    case '6': // включает клапан и запрещает автоматическое управление им
+        // Внимание! Защита от перегрева отключается!
+        digitalWrite(PIN_KLP_BEG + valveId, KLP_HIGH);
+        KlManualMode[valveId] = 1;
+        KlState[valveId] = 1;
+        break;
+    }
+}
+
 // Отправка данных на ESP через UART
 // Phisik: отправка данных теперь полностью асинхронная, мы не задерживаемся в этой функции
 //         отправили, и освобождаем очередь. На следующем loop-e отправим следующую порцию
@@ -292,8 +326,7 @@ bool mqttSendStatus()
 
     // Отправляем текущие данные
     case 1: // Вывод LCD экрана
-        mqttSerialPrint(lcd_mqtt_buf1);
-        mqttSerialPrint(lcd_mqtt_buf2);
+        mqttSerialPrint(lcd_mqtt_buf[0]);
         break;
     case 2: // Текущий режим
         snprintf_P(buf, MQTT_BUFFER_SIZE, fmt_IspReg, IspReg);
@@ -346,13 +379,25 @@ bool mqttSendStatus()
         snprintf_P(buf, MQTT_BUFFER_SIZE, fmt_razgonTEH, digitalRead(PIN_RZG_ON) == RELAY_HIGH);
         // DEBUG_SERIAL.println(buf);
         break;
-    case 18:
+    case 18: // Вывод LCD экрана
+        if (LCD_HEIGHT > 1)
+            mqttSerialPrint(lcd_mqtt_buf[1]);
+        break;
+    case 19: // Вывод LCD экрана
+        if (LCD_HEIGHT > 2)
+            mqttSerialPrint(lcd_mqtt_buf[2]);
+        break;
+    case 20: // Вывод LCD экрана
+        if (LCD_HEIGHT > 3)
+            mqttSerialPrint(lcd_mqtt_buf[3]);
+        break;
+    case 21:
         // Если не надо все данные отправлять, то переходим в idle state
         if (!bSendAllData)
             nMqttStateMachine = 0;
         break;
 
-    case 19 ... 28: // Phisik: this is GCC C++ extension, not included in C++ standard. Don't do like this ;)
+    case 22 ... 28: // Phisik: this is GCC C++ extension, not included in C++ standard. Don't do like this ;)
         nMqttStateMachine = 29;
 
         // Ниже break отключен, чтобы не терять инетацию, т.к. case-ы выполняются последовательно
@@ -1142,51 +1187,19 @@ void processRecievedData(const char* pub_topic, const char* val)
 
     // управление клапанами
     else if (strncmp_P(pub_topic, PSTR("klpGLV_HVS"), MQTT_BUFFER_SIZE) == 0) {
-        if (val[0] == '1') {
-            KlOpen[KLP_GLV_HVS] = 1000;
-            KlClose[KLP_GLV_HVS] = 0;
-            KlReg[KLP_GLV_HVS] = PEREGREV_ON;
-        } else {
-            KlOpen[KLP_GLV_HVS] = 0;
-            KlClose[KLP_GLV_HVS] = 1000;
-            KlReg[KLP_GLV_HVS] = 0;
-        }
+        handleValve(KLP_GLV_HVS, val[0]);
         DEBUG_SERIAL.print("MQTT command received: changing KLP_GLV_HVS state to ");
         DEBUG_SERIAL.println(val);
     } else if (strncmp_P(pub_topic, PSTR("klpSR"), MQTT_BUFFER_SIZE) == 0) {
-        if (val[0] == '1') {
-            KlOpen[KLP_SR] = 1000;
-            KlClose[KLP_SR] = 0;
-            KlReg[KLP_SR] = PEREGREV_ON;
-        } else {
-            KlOpen[KLP_SR] = 0;
-            KlClose[KLP_SR] = 1000;
-            KlReg[KLP_SR] = 0;
-        }
+        handleValve(KLP_SR, val[0]);
         DEBUG_SERIAL.print("MQTT command received: changing KLP_SR state to ");
         DEBUG_SERIAL.println(val);
     } else if (strncmp_P(pub_topic, PSTR("klpHLD"), MQTT_BUFFER_SIZE) == 0) {
-        if (val[0] == '1') {
-            KlOpen[KLP_HLD] = 1000;
-            KlClose[KLP_HLD] = 0;
-            KlReg[KLP_HLD] = PEREGREV_ON;
-        } else {
-            KlOpen[KLP_HLD] = 0;
-            KlClose[KLP_HLD] = 1000;
-            KlReg[KLP_HLD] = 0;
-        }
+        handleValve(KLP_HLD, val[0]);
         DEBUG_SERIAL.print("MQTT command received: changing KLP_HLD state to ");
         DEBUG_SERIAL.println(val);
     } else if (strncmp_P(pub_topic, PSTR("klpDEFL"), MQTT_BUFFER_SIZE) == 0) {
-        if (val[0] == '1') {
-            KlOpen[KLP_DEFL] = 1000;
-            KlClose[KLP_DEFL] = 0;
-            KlReg[KLP_DEFL] = PEREGREV_ON;
-        } else {
-            KlOpen[KLP_DEFL] = 0;
-            KlClose[KLP_DEFL] = 1000;
-            KlReg[KLP_DEFL] = 0;
-        }
+        handleValve(KLP_DEFL, val[0]);
         DEBUG_SERIAL.print("MQTT command received: changing KLP_DEFL state to ");
         DEBUG_SERIAL.println(val);
     } else if (strncmp_P(pub_topic, fmt_TempZSP, 7) == 0) {

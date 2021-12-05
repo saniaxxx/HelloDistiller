@@ -26,6 +26,13 @@ extern unsigned int KlOpen[MAX_KLP];
 extern unsigned int KlClose[MAX_KLP];
 extern unsigned int BeepTime;
 extern unsigned int KlCount[MAX_KLP];
+
+// Phisik @ 2021-03-26
+// Флаг ручного управления плапанами
+// Если флаг стоит, то защита от перегрепа не работает и клапан просто находится в заданном состоянии
+// Из чего следует, что надолжго переключать греющиеся клапана в этот режим не стОит.
+extern uint8_t KlManualMode[MAX_KLP];
+
 extern unsigned int ipPort;
 // extern unsigned int tableSQ[MAX_TABLE_SQRT];
 extern unsigned char zPSOut;
@@ -249,6 +256,9 @@ extern LiquidCrystal_I2C lcd;
 extern LiquidCrystal lcd;
 #endif // USE_I2C_LCD
 
+void dirtyTrickSetCursor(int col, int row);
+void dirtyTrickLcdClear();
+
 extern OneWire ds;
 
 void DisplayData();
@@ -256,7 +266,15 @@ void my_beep(unsigned int mBeepTime);
 void CloseAllKLP();
 void SetAngle(unsigned char Angl);
 void zero_cross_int();
-void my_lcdprint(char* s);
+
+void my_lcdprint(char* s, int row = -1);
+void my_lcdprint_P(const char* progmem_string, int row = -1);
+
+void displayMainScreens(char flDspDop);
+void displayInitialTwoPages();
+void displayProcessSelector(int item);
+void displaySettings(int item);
+
 void GetPhonePDU();
 void ReadAlarm();
 void OpenKLP();
@@ -311,13 +329,12 @@ void ScanKbd();
 // mqtt.cpp
 #if USE_MQTT_BROKER
 
-#define MQTT_BUFFER_SIZE 50
+#define MQTT_BUFFER_SIZE LCD_BUFFER_SIZE
 
-extern char lcd_mqtt_buf1[LCD_BUFFER_SIZE];
-extern char lcd_mqtt_buf2[LCD_BUFFER_SIZE];
+extern char lcd_mqtt_buf[LCD_HEIGHT][LCD_BUFFER_SIZE];
+
 extern char buf_pmem[LCD_BUFFER_SIZE];
-extern PROGMEM const char fmt_lcd1[];
-extern PROGMEM const char fmt_lcd2[];
+extern PROGMEM const char fmt_lcd_n[];
 
 void mqttSerialPrint(char*);
 bool mqttSendStatus();
@@ -339,10 +356,18 @@ extern uint8_t ds1820_nums[MAX_DS1820];
 #endif
 
 #if USE_BMP280_SENSOR
+#if SENSOR_IS_BME280_NOT_BMP280
+extern Adafruit_BME280 bmp; // I2C
+#else
 extern Adafruit_BMP280 bmp; // I2C
+#endif
 
 extern int PressAtm;
 extern unsigned char flReadPress;
 extern unsigned char timePressAtm;
 extern char ds1820_poprPress[MAX_DS1820]; // Поправки к температуре датчиков
 #endif
+
+#if USE_CYRILLIC_DISPLAY
+char* utf8rus(char*);
+#endif //  USE_CYRILLIC_DISPLAY

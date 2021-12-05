@@ -1,0 +1,247 @@
+{
+    "tabs":{
+      "tabMain": {"name":"Главная", "hidden":0},
+      "tabCharts": {"name":"Графики", "hidden":0},
+      "tabRecipes": {"name":"Рецепты", "hidden":0},
+      "tabSyslog": {"name":"Журнал", "hidden":0},
+      "tabHdSettings": {"name":"Настройки HD", "hidden":0},
+      "tabSettings": {"name":"Настройки ESP", "hidden":0}
+    },
+	"lcd": {
+       "lines": 4
+    },
+    "process_visibility":{
+        "101":{"name":"Мониторинг", "hidden":0},
+        "102":{"name":"Термостат", "hidden":0},
+        "103":{"name":"Регулятор мощности", "hidden":0},
+        "104":{"name":"Первый (недробный) отбор", "hidden":0},
+        "105":{"name":"Отбор голов", "hidden":1},
+        "106":{"name":"Второй дробный отбор", "hidden":1},
+        "107":{"name":"Третий дробный отбор ", "hidden":1},
+        "108":{"name":"Затор зерна", "hidden":1},
+        "109":{"name":"Ректификация", "hidden":0},
+        "110":{"name":"Дистилляция с дефлегматором", "hidden":1},
+        "111":{"name":"НДРФ", "hidden":1},
+        "112":{"name":"Непрерывная бражная колонна (НБК)", "hidden":0},
+        "113":{"name":"Мучно-солодовый затор (без варки)", "hidden":1},
+        "114":{"name":"Разваривание зерна с чиллером и миксером", "hidden":1},
+        "115":{"name":"Таймер + регулятор мощности", "hidden":1},
+        "116":{"name":"Пивоварня (клон Braumaster)", "hidden":0},
+        "117":{"name":"Фракционная перегонка", "hidden":1},
+        "118":{"name":"Фракционная ректификация", "hidden":1},
+        "129":{"name":"Тест клапанов", "hidden":0}
+    },
+    "charts":{
+      "menu":{
+        "2":{
+          "name":"Мощность на рабочем ТЭНе, Вт",
+          "lines": [1]
+        },
+        "3":{
+          "name":"Напряжение в сети (RMS), В",
+          "lines": [2]
+        },
+       "1":{
+          "name":"Датчики температуры, &#8451;",
+          "lines": [3,4,5]
+        },
+       "4":{
+          "name":"Температура стабилизации, &#8451;",
+          "lines": [6]
+        },
+       "5":{
+          "name":"ШИМ клапана отбора, %",
+          "lines": [7]
+        },
+       "6":{
+          "name":"Давление в кубе, кг/см<sup>2</sup>",
+          "lines": [8]
+        },
+       "7":{
+          "name":"Скорость НБК, %",
+          "lines": [9]
+        }
+      },
+    "lines": {
+        "1":{"name":"Мощность на рабочем ТЭНе","units":" Вт"},
+        "2":{"name":"Напряжение в сети","units":" В"},
+        "3":{"name":"Т<sub>куб</sub>","units":"&#8451;"},
+        "4":{"name":"Т<sub>колонна</sub>","units":"&#8451;"},
+        "5":{"name":"Т<sub>ТСА</sub>","units":"&#8451;"},
+        "6":{"name":"Т стабилизации","units":"&#8451;"},
+        "7":{"name":"ШИМ отбора спирта","units":"%"},
+        "8":{"name":"Давление в кубе","units":" кг/см<sup>2</sup>"},
+        "9":{"name":"Скорость насоса","units":"%"},
+        "10":{"name":"Т в ПВК", "units":"&#8451;"}
+      }
+    },
+    "common": {
+        "aliases": [
+            "all"
+        ],
+        "panels": [
+            {
+                "name": "Состояние контроллера",
+                "position": "left",
+                "hidden": 0, 
+                "top":"0px", 
+                "bottom":"0px" 
+            },
+            {
+                "name": "Состояние контроллера",
+                "position": "right",
+                "hidden": 0, 
+                "top":"0px", 
+                "bottom":"0px"
+            },
+            {
+                "name": "Датчики температуры",
+                "position": "left",
+                "hidden": 0, 
+                "top":"0px", 
+                "bottom":"0px"
+            },
+            {
+                "name": "Управление клапанами",
+                "position": "right",
+                "hidden": 0, 
+                "top":"0px", 
+                "bottom":"0px"
+            }
+        ],
+        "info": [
+            {
+                "name": "Время работы контроллера",
+                "type": "text",
+                "value": "work_time",
+                "units": "",
+                "code": ""
+            },
+            {
+                "name": "Время этапа",
+                "type": "text",
+                "value": "TimeStage",
+                "units": "",
+                "code": ""
+            },
+            {
+                "name": "Текущий ШИМ клапана отбора",
+                "type": "text",
+                "value": "ProcShimSR",
+                "units": "%",
+                "code": ""
+            },
+            {
+                "name": "Мощность на рабочем ТЭНе",
+                "type": "text",
+                "value": "FactPower",
+                "units": " Вт",
+                "code": ""
+            },
+             
+            {
+                "name": "Напряжение в сети (RMS)",
+                "type": "text",
+                "value": "MaxVoltsOut",
+                "units": " В",
+                "code": ""
+            },
+            {
+                "name": "Давление в рубашке ПВК",
+                "type": "code",
+                "value": "UU_MPX5010",
+                "units": " мм.рт.ст.",
+                "code": "(x/10).toFixed(1)"
+            },
+            {
+                "name": "Скорость насоса НБК",
+                "type": "code",
+                "value": "SpdNBK",
+                "units": "%",
+                "code": "(0.8*x).toFixed(1)"
+            },
+            {
+                "name": "Температура стабилизации колонны",
+                "type": "code",
+                "value": "tStabSR",
+                "units": " &#8451;",
+                "code": "(x/10).toFixed(1)"
+            },
+            {
+                "name": "Примерная крепость в кубе (в парах)",
+                "type": "code",
+                "value": "userValue0",
+                "units": "",
+                "code": "(x == '0')?'нет кипения':x"
+            }
+        ],
+        "temps": [
+            {
+                "name": "Температура в кубе",
+                "type": "code",
+                "value": "t_kub",
+                "units": " &#8451;",
+                "code": "(x/10).toFixed(1)"
+
+            },
+            {
+                "name": "Температура в колонне",
+                "type": "code",
+                "value": "t_col",
+                "units": " &#8451;",
+                "code": "(x/10).toFixed(1)"
+
+            },
+            {
+                "name": "Температура в ТСА",
+                "type": "code",
+                "value": "t_tsa",
+                "units": " &#8451;",
+                "code": "(x/10).toFixed(1)"
+
+            }
+        ],
+        "valves": [
+            {
+                "name": "Отбора головных фракций",
+                "type": "code",
+                "value": "klpGLV_HVS",
+                "units": "",
+                "code": "(x)?'Открыт':'Закрыт'"
+
+            },
+            {
+                "name": "Отбора ректификата",
+                "type": "code",
+                "value": "klpSR",
+                "units": "",
+                "code": "(x)?'Открыт':'Закрыт'"
+
+            },
+            {
+                "name": "Подача воды в холодильник",
+                "type": "code",
+                "value": "klpHLD",
+                "units": "",
+                "code": "(x)?'Открыт':'Закрыт'"
+
+            },
+            {
+                "name": "Подача воды в дефлегматор",
+                "type": "code",
+                "value": "klpDEFL",
+                "units": "",
+                "code": "(x)?'Открыт':'Закрыт'"
+
+            },
+            {
+                "name": "Разгонный ТЭН",
+                "type": "code",
+                "value": "razgonTEH",
+                "units": "",
+                "code": "(x)?'Вкл':'Выкл'"
+
+            }
+        ]
+    }
+}

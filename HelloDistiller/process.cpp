@@ -923,7 +923,7 @@ void ProcessNDRF()
             my_beep(BEEP_LONG);
         Count_Provodimost = 0;
     case 2: // Разгон
-        UstPower = Power; // Устанавливаем максимальную мощность для разгона
+        UstPower = 2900; // Устанавливаем максимальную мощность для разгона
 
         // Учитываем как температуру в кубе, так и температуру в колонне, в зависимости от того, положительные или отрицательные значения температур.
         if (DS_TEMP(TEMP_KUB) < tEndRectRazgon && tEndRectRazgon > 0)
@@ -1761,7 +1761,7 @@ void ProcessRectif()
             CntCHIM = -1;
 
     case 2: // Разгон
-        UstPower = Power; // Устанавливаем максимальную мощность для разгона
+        UstPower = 2900; // Устанавливаем максимальную мощность для разгона
         // Подчиненные контроллеры переводим в разгон
         digitalWrite(PIN_SLAVE_0, 1);
         digitalWrite(PIN_SLAVE_1, 0);

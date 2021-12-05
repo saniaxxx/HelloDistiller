@@ -24,6 +24,26 @@ void ScanKbd()
 {
     int menuFlagNumber;
 
+    bool* settingsEnableFlag = (bool*)settingsEnableFlagDefault;
+
+    switch (IspReg) {
+    case ISPREG_RECT:
+        settingsEnableFlag = (bool*)settingsEnableFlagRect;
+        break;
+    case ISPREG_1_DIST:
+    case ISPREG_2_DIST:
+    case ISPREG_3_DIST:
+    case ISPREG_DEFL_DIST:
+        settingsEnableFlag = (bool*)settingsEnableFlagDistill;
+        break;
+    case ISPREG_NBK:
+        settingsEnableFlag = (bool*)settingsEnableFlagNBK;
+        break;
+        //default:
+        //	settingsEnableFlag = (bool *) settingsEnableFlagDefault;
+        //	break;
+    }
+
     char i;
 #ifdef DEBUG
     if (DEBUG_SERIAL.available())
@@ -65,18 +85,27 @@ void ScanKbd()
         if (KeyCode == 0) {
             const int key = analogRead(PIN_LCD_KEYPAD);
 
+            // Limon's keyboard 2021-03-26
             if (key >= 0)
-                KeyCode = 2; // 0
-            if (key >= 130)
-                KeyCode = 5; // 300
-            if (key >= 300)
+                KeyCode = 2; // 0    // RIGHT
+            if (key >= 90)
                 KeyCode = 4; // 130
+            if (key >= 200)
+                KeyCode = 5; // 300
             if (key >= 400)
                 KeyCode = 3; // 485
             if (key >= 600)
                 KeyCode = 1; // 720
             if (key >= 850)
                 KeyCode = 0;
+
+                // Keyes AD keypad
+                //if (key >= 0)    KeyCode = 2;	// 0    // RIGHT
+                //if (key >= 90)   KeyCode = 5;   // 130  // UP
+                //if (key >= 200)  KeyCode = 4;   // 300  // DOWN
+                //if (key >= 400)  KeyCode = 3;   // 485  // LEFT
+                //if (key >= 600)  KeyCode = 1;   // 720
+                //if (key >= 850)  KeyCode = 0;
 
 #if PRINT_ADC_VALUES
             if (KeyCode > 0) {
@@ -123,7 +152,7 @@ void ScanKbd()
             lcd.begin(LCD_WIDTH, LCD_HEIGHT);
 #endif // USE_I2C_LCD
 
-            lcd.clear();
+            dirtyTrickLcdClear();
             DisplayData();
         }
 
@@ -690,7 +719,7 @@ void ScanKbd()
 #else
                     lcd.begin(LCD_WIDTH, LCD_HEIGHT);
 #endif // USE_I2C_LCD
-                    lcd.clear();
+                    dirtyTrickLcdClear();
                     DisplayData();
                 }
 #endif
@@ -946,7 +975,7 @@ void ScanKbd()
 #else
                     lcd.begin(LCD_WIDTH, LCD_HEIGHT);
 #endif // USE_I2C_LCD
-                    lcd.clear();
+                    dirtyTrickLcdClear();
                     DisplayData();
                 }
 #endif
@@ -958,6 +987,7 @@ void ScanKbd()
                 else
                     FlState = 129; // или сразу на тест клапанов
                 break;
+
             case 101:
             case 102:
             case 103:
@@ -1218,7 +1248,13 @@ void ScanKbd()
                         break;
                     }
                 }
-
+                if (IspReg == 102) {
+                    CountKeys = 1;
+                    if (StateMachine == 2)
+                        TempTerm++;
+                    if (DispPage == 1)
+                        PowerVarkaZerno += 10;
+                }
                 // Регулятор мощности
                 if (IspReg == 103) {
                     if (SlaveON == 0) {
@@ -1240,39 +1276,38 @@ void ScanKbd()
                     //TekPower=(unsigned long) UstPower*220*220/ Power;
                     CountKeys = 1;
                 }
-
                 if (IspReg == 104) {
                     CountKeys = 1;
-                    if (StateMachine == 2)
+                    if ((StateMachine == 2) && (DispPage == 0))
                         TempDeflBegDistil++;
                     else {
                         if (DispPage == 0)
                             Temp1P++;
                         else
-                            PowerDistil += 10;
+                            Power += 10;
                     }
                 }
                 if (IspReg == 106) {
                     CountKeys = 1;
-                    if (StateMachine == 2)
+                    if ((StateMachine == 2) && (DispPage == 0))
                         TempDeflBegDistil++;
                     else {
                         if (DispPage == 0)
                             Temp2P++;
                         else
-                            PowerDistil += 10;
+                            Power += 10;
                     }
                 }
 
                 if (IspReg == 107) {
                     CountKeys = 1;
-                    if (StateMachine == 2)
+                    if ((StateMachine == 2) && (DispPage == 0))
                         TempDeflBegDistil++;
                     else {
                         if (DispPage == 0)
                             Temp3P++;
                         else
-                            PowerDistil += 10;
+                            Power += 10;
                     }
                 }
 
@@ -1285,7 +1320,7 @@ void ScanKbd()
                             if (DispPage == 0)
                                 TempFractionDist[TekFraction]++;
                             else
-                                PowerFractionDist[TekFraction] += 10;
+                                Power += 10;
                         }
                     }
                 }
@@ -1294,8 +1329,14 @@ void ScanKbd()
                     CountKeys = 1;
                     if (StateMachine == 3)
                         PowerGlvDistil += 10;
-                    if (StateMachine == 2)
+                    if ((StateMachine == 2) && (DispPage == 0))
                         TempDeflBegDistil++;
+                    else {
+                        if (DispPage == 0)
+                            Temp3P++;
+                        else
+                            Power += 10;
+                    }
                 }
 
                 if (IspReg == 114) {
@@ -1316,6 +1357,8 @@ void ScanKbd()
                 }
 
                 if (IspReg == 116) {
+                    if (DispPage == 0 && StateMachine == 2)
+                        PowerVarkaZerno++;
                     if (DispPage == 0 && StateMachine == 3 && timeP[KlTek] == 0)
                         timeP[KlTek] = 255;
                     else {
@@ -1355,7 +1398,7 @@ void ScanKbd()
                         break;
 
                     case 6: //Варка
-                    case 9: //Размешивание после засыпания солшода
+                    case 9: //Размешивание после засыпания солода
                     case 10: // Осахаривание
                         if (DispPage == 0)
                             time2 += 60;
@@ -1904,7 +1947,13 @@ void ScanKbd()
                         break;
                     }
                 }
-
+                if (IspReg == 102) {
+                    CountKeys = 1;
+                    if (StateMachine == 2)
+                        TempTerm--;
+                    if (DispPage == 1)
+                        PowerVarkaZerno -= 10;
+                }
                 // Регулятор мощности
                 if (IspReg == 103) {
                     if (SlaveON == 0)
@@ -1921,31 +1970,31 @@ void ScanKbd()
                 }
                 if (IspReg == 104) {
                     CountKeys = 1;
-                    if (StateMachine == 2)
+                    if ((StateMachine == 2) && (DispPage == 0))
                         TempDeflBegDistil--;
                     else if (DispPage == 0)
                         Temp1P--;
                     else
-                        PowerDistil -= 10;
+                        Power -= 10;
                 }
                 if (IspReg == 106) {
                     CountKeys = 1;
-                    if (StateMachine == 2)
+                    if ((StateMachine == 2) && (DispPage == 0))
                         TempDeflBegDistil--;
                     else if (DispPage == 0)
                         Temp2P--;
                     else
-                        PowerDistil -= 10;
+                        Power -= 10;
                 }
 
                 if (IspReg == 107) {
                     CountKeys = 1;
-                    if (StateMachine == 2)
+                    if ((StateMachine == 2) && (DispPage == 0))
                         TempDeflBegDistil--;
                     else if (DispPage == 0)
                         Temp3P--;
                     else
-                        PowerDistil -= 10;
+                        Power -= 10;
                 }
 
                 if (IspReg == 117) {
@@ -1957,7 +2006,7 @@ void ScanKbd()
                             if (DispPage == 0)
                                 TempFractionDist[TekFraction]--;
                             else
-                                PowerFractionDist[TekFraction] -= 10;
+                                Power -= 10;
                         }
                     }
                 }
@@ -1966,8 +2015,14 @@ void ScanKbd()
                     CountKeys = 1;
                     if (StateMachine == 3)
                         PowerGlvDistil -= 10;
-                    if (StateMachine == 2)
+                    if ((StateMachine == 2) && (DispPage == 0))
                         TempDeflBegDistil--;
+                    else {
+                        if (DispPage == 0)
+                            Temp3P--;
+                        else
+                            Power -= 10;
+                    }
                 }
 
                 if (IspReg == 114) {
@@ -2116,8 +2171,10 @@ void ScanKbd()
                 }
 
                 if (IspReg == 116) {
-                    // На второй странице можно выключить насос.
-                    if (DispPage == 1) {
+                    if (DispPage == 0 && StateMachine == 2)
+                        PowerVarkaZerno--;
+                    if (DispPage == 1) // На второй странице можно выключить насос.
+                    {
                         time1 = 0;
                         KlOpen[KLP_HLD] = 40;
                     }

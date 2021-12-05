@@ -2,7 +2,7 @@
 // Файл содержит дефолтные настройки системы
 // Часть настроек меняется в файле configuration.h при выборе версий, внимательно с этим!
 
-#define PR_REWRITE_EEPROM 1 // Константа, которая содержит признак необходимости перезаписи энергонезависимой памяти (1-254). \
+#define PR_REWRITE_EEPROM 9 // Константа, которая содержит признак необходимости перезаписи энергонезависимой памяти (1-254). \
     // При запуске программы, значение 0-го байта ЕЕПРОМ сравнивается с этим значением,                                                  \
     // и если они не совпадают, тогда энергонезависимая памиять переписывается текущими значениями переменных    \
     // То есть для значений переменных из скетча в контроллер, ее значение надо поменять например с 9 до 10.
@@ -51,7 +51,7 @@
 
 #define MENU_DELAY_SEC 60 // Phisik 2020-03-07: Через сколько секунд надо выходить из меню
 
-#define DEBOUNCE_CYCLES 15 // Число отсчетов таймера для устранения дребезга кнопок, \
+#define DEBOUNCE_CYCLES 10 // Число отсчетов таймера для устранения дребезга кнопок, \
     // Phisik: было 20, и, как по мне, то кнопки тормозили
 
 #define ENABLE_LCD_CLEAR 0 // Phisik 2020-03-07: Отключить периодические очищения дисплея, \
@@ -61,8 +61,10 @@
 #define LCD_WIDTH 20
 #define LCD_HEIGHT 4
 
-// предполагаем 2 байта на символ, в международной кодировке (UTF8 может быть 1-4 байта на символ)
-#define LCD_BUFFER_SIZE (LCD_WIDTH * 2 + 2)
+// В международной кодировке UTF8 может быть 1-4 байта на символ,
+#define LCD_BUFFER_SIZE (LCD_WIDTH * 4 + 2)
+
+#define USE_CYRILLIC_DISPLAY 1
 
 //=======================================================================================================
 // ОБЩИЕ НАСТРОЙКИ
@@ -97,12 +99,20 @@
     // Реализация выдрана из скетча 3.58i                                                                                                                  \
     // Возможно, стоит отключить ADJUST_COLUMN_STAB_TEMP ниже, если хочется работать только с датчиком давления \
     // НО можно и не отключать
+#define SENSOR_IS_BME280_NOT_BMP280 0 // включить, если датчик в реальности BME280
 
-#if USE_BMP280_SENSOR
+#define BMP_SENSOR_ADDRESS 0x76
+
+#if USE_BMP280_SENSOR == 1
 #include <SPI.h>
 
 #include <Adafruit_Sensor.h>
+
+#if SENSOR_IS_BME280_NOT_BMP280
+#include <Adafruit_BME280.h>
+#else
 #include <Adafruit_BMP280.h>
+#endif
 
 #endif
 
@@ -113,10 +123,28 @@
 // Настройка чувствительности датчика тока на трансформаторе тока
 // Этап 1 Ищем/определяем число витков нашего трансформатора
 //=======================================================================================
+// Для DL-CT08CL5-20A/10ma по datasheet-y заявлено 2000:1
+// У вас может быть другое число витков
+const int N_ac_transformer_turns = 2000; // limon // 30.11.20
+
 // Для Simonsen123 CT-051-1.0 по datasheet-y заявлено 1000:1
 // https://simonsen123.en.made-in-china.com/product/sKeESfXJZPYy/China-40A-Current-Transformer-CT-051-1-0.html
 // У вас может быть другое число витков
-const int N_ac_transformer_turns = 2000;
+//const int N_ac_transformer_turns = 1000;
+
+// Этап 2 Рассчитываем номинал резистора, на который нагружен датчик тока
+//=======================================================================================
+// Рассчитывается так:
+// 1. Определяем максимальную мощность, которую можем измерить. Например, 3200W
+// ( На самом деле считаем с конца методики, трансформатор 20A/10ma Irms=20A/1.41=13.8A P=13.8*230=3174W ~ 3200W
+// 3200W Это максимальная мощность для этого трансформатора DL-CT08CL5-20A/10ma)
+// 2. Ищем средний RMS ток: I_rms = 3200Вт/230В ~ 13.8A
+// 3. Определяет амплитуду тока: I_peak = I_rms*sqrt(2) ~ 20A
+// 4. Определяем ток во вторичной обмотке: I_peak_2 = I_peak / N_ac_transformer_turns = 20A/2000 ~ 0.01A
+// 5. Убеждаемся, что этот ток меньше максимально допустимого для трансформатора, для DL-CT08CL5-20A/10ma - 0.01А.
+// 6. Определяем сопротивление из расчета, чтобы пиковое напряжение на нем было < 2.5В: R_burden =  2.5/I_peak_2 = 2.5/0.01= 250 Ом
+// 7. Ищем ближайшее похожее в своих коробках, лучше в меньшую сторону. Я поставил пораллельно два по 510 Ом ~ 250 Ом.
+const int R_burden = 250; // limon	// 30.11.20  R_burden =  2.5/0,01 ~ 250 Ом
 
 // Этап 2 Рассчитываем номинал резистора, на который нагружен датчик тока
 //=======================================================================================
@@ -128,14 +156,21 @@ const int N_ac_transformer_turns = 2000;
 // 5. Убеждаемся, что этот ток меньше максимально допустимого для трансформатора, у меня 400мА. Иначе ищем другой датчик.
 // 6. Определяем сопротивление из расчета, чтобы пиковое напряжение на нем было < 2.5В: R_burden =  2.5/I_peak_2 ~ 119 Ом
 // 7. Ищем ближайшее похожее в своих коробках, лучше в меньшую сторону. Я нашел 120 Ом
-const int R_burden = 270;
+//const int R_burden = 120;
 
 // Этап 3 Рассчитываем коэффициент чувствительности, т.е. количество ступеней ADC на 10A входного тока
 //=======================================================================================
 const int SENSITIVE_ASC712 = int(2048.0 * R_burden / N_ac_transformer_turns); // у меня получилось ~ 245 из 1023, т.е. ~ +-21А в пике
+
 #else
 #define SENSITIVE_ASC712 135 // Чувствительность датчика тока (показаний АЦП ардуино на 10 ампер тока 135 для 30А датчика, 205 для 20А датчика 82)
 #endif
+
+// Phisik @ 2021-03-25
+// Этот параметр используется для сглаживания мощности, чтобы она туда сюда так не скакала
+// FactPower = (1-POWER_SMOOTHING_FACTOR)*FactPower + POWER_SMOOTHING_FACTOR*FindPower;
+// Должен быть строго больше 0! Не уверен - не трогай!!!
+#define POWER_SMOOTHING_FACTOR 0.1 // 0 < POWER_SMOOTHING_FACTOR <= 1
 
 #define CNT_PERIOD 4 // Количество полу-периодов для обсчета среднеквадратичного
 
@@ -154,7 +189,7 @@ const int SENSITIVE_ASC712 = int(2048.0 * R_burden / N_ac_transformer_turns); //
 // Это связано необходимостью учитывать изменение атмосферного давления. При повышении давления, ситуацию в принципе
 // спасет TimeRestabKolonna, а вот при пониженнии давления температура уплывает вниз, из-за чего "эффективная" дельта
 // становится больше и хвосты можно пропустить. Если у вас есть датчик давления - оно вам скорее всего не надо.
-#define ADJUST_COLUMN_STAB_TEMP 1
+#define ADJUST_COLUMN_STAB_TEMP 0
 
 #if ADJUST_COLUMN_STAB_TEMP
     // Как часто будем проверять изменение температуры
@@ -186,7 +221,8 @@ const float tStabAverageDivisor = 1 + 1.0 / tStabTimeConstant;
 
 #define KLP_HIGH 1 // Уровень на выходе для сработки клапана \
     // Для клапанов с низким уровнем управления поменять 0 на 1
-#define PEREGREV_ON 1 // Защита от перегрева клапанов, 1- использовать, 0-нет.
+
+#define PEREGREV_ON 0 // Защита от перегрева клапанов, 1- использовать, 0-нет.
 #define USE_12V_PWM 1 // Phisik: Признак того, что надо использовать защиту от перегрева 12В клапанов
 
 #if PEREGREV_ON == 0
@@ -194,7 +230,7 @@ const float tStabAverageDivisor = 1 + 1.0 / tStabTimeConstant;
 #define PER_KLP_CLOSE 1 // чтобы не было гидроударов
 #else
 #define PER_KLP_OPEN 1000 // клапана на воду переводим в фазовое управление, чтобы раз в 10 секунд на них подавалось полное напряжение, а затем напряжение
-#define PER_KLP_CLOSE 0 // из контанты U_PEREGREV 150
+#define PER_KLP_CLOSE 0 // из конcтанты U_PEREGREV 150
 #endif
 
 #define MAX_KLP 5 // Количество клапанов, которыми надо управлять по ШИМ.
@@ -222,7 +258,7 @@ const float tStabAverageDivisor = 1 + 1.0 / tStabTimeConstant;
 
 #define USE_ALARM_VODA 1 // Нужно ли использовать датчик разлития воды ардуино
 
-#define UROVEN_ALARM 50 // Уровень сигнала, достижение котогого свидетельсвует о срабатывании аналогового датчика. \
+#define UROVEN_ALARM 50 //1		// Уровень сигнала, достижение котогого свидетельсвует о срабатывании аналогового датчика. \
     // В обычном состоянии он выведен на значение около 1000 для датчиков на уменьшение напряжения
 // или на значение около 0-10 для датчиков на увеличение напряжения
 // Для цифрового датчика используем 1
@@ -239,8 +275,8 @@ const float tStabAverageDivisor = 1 + 1.0 / tStabTimeConstant;
 #define MAX_COUNT_NPG_ALARM 60 // Количество сработок осушения или переполнения, чтобы достоверно детектировать состояние НПГ (каждое значение -полсекунды)
 
 // Газовый сенсор
-#define USE_GAS_SENSOR 1 // Надо ли использовать датчик загазованности
-#define UROVEN_GAS_SENSOR 800 // Уровень сигнала, достижение котогого свидетельсвует о срабатывании датчика спиртового пара
+#define USE_GAS_SENSOR 0 // Надо ли использовать датчик загазованности
+#define UROVEN_GAS_SENSOR 700 // Уровень сигнала, достижение котогого свидетельсвует о срабатывании датчика спиртового пара
 #define COUNT_GAS_SENSOR 6 // Сколько должно держаться значение уровня, чтобы сработала тревога каждое значение - это полсекунды.
 #define TIME_PROGREV_GAS_SENSOR 60 // Время для програва датчика спиртовых паров газа.
 
@@ -287,17 +323,17 @@ const bool menuEnableFlag[MENU_ITEMS] = {
     0, // case 105:  Отбор голов
     0, // case 106:  Второй дробный отбор
     0, // case 107:  Третий дробный отбор
-    0, // case 108:  Затор зерно
+    1, // case 108:  Затор зерно
     1, // case 109:  Ректификация
-    0, // case 110:  Дистилляция с дефлегматором
+    1, // case 110:  Дистилляция с дефлегматором
     0, // case 111:  НДРФ
     1, // case 112:  NBK
-    0, // case 113:  Разваривание мучно-солодового затора (без варки).
-    0, // case 114:  Разваривание с чиллером и миксером
+    1, // case 113:  Разваривание мучно-солодового затора (без варки).
+    1, // case 114:  Разваривание с чиллером и миксером
     1, // case 115:  Таймер + регулятор мощности
     1, // case 116:  Пивоварня - клон браумастера
-    0, // case 117:  Фракционная перегонка
-    0, // case 118:  Ректификация Фракционная
+    1, // case 117:  Фракционная перегонка
+    1, // case 118:  Ректификация Фракционная
     1, // case 129:  Тест клапанов // Не отключается!
     0 // case 130:  Внешнее управление
 };
@@ -324,13 +360,14 @@ const bool menuEnableFlag[MENU_ITEMS] = {
 // Обновил алгоритм зацикливания. Теперь не надо задавать LAST_ITEM/FIRST_ITEM
 // Просто расставить  1/0
 
-const bool settingsEnableFlag[SETTINGS_ITEMS] = {
-    0, //  200: "Max_t_Tst=%5i"
+const bool settingsEnableFlagDefault[SETTINGS_ITEMS] = {
+    //Общие настройки
+    1, //  200: "Max_t_Tst=%5i"
     1, //  201: "Power TEN=%5u"
     1, //  202: "Power Reg=%5u"
     0, //  203: "ParamUSART=%u"
     USE_GSM_WIFI, //  204: "ParamGSM=%u"
-    0, //  205: "dtTermostat=%3i"
+    1, //  205: "dtTermostat=%3i"
     1, //  206: "Temp 1 Nedrobn Distill=%3i"
     0, //  207: "Temp 2 Drobn Distill=%3i"
     0, //  208: "Temp 3 Drobn Distill=%3i"
@@ -346,13 +383,94 @@ const bool settingsEnableFlag[SETTINGS_ITEMS] = {
     1, //  218: "Temp Okon Rectif=%3i"
     0, //  219: "Power GLV simple Distill=%4i"
     1, //  220: "Power simple Distill=%4i"
+    1, //  221: "Temp Begin Dist (+Def -Kub)=%3i"
+    1, //  222: "Temp Distill With Defl=%3i"
+    1, //  223: "Delta Distill With Defl=%3i"
+    1, //  224: "Temp Kub Okon DistWithDefl=%3i"
+    1, //  225: "BeepEndProc=%1u"
+    1, //  226: "BeepStateProc=%1u"
+    1, //  227: "BeepKeyPress=%1u"
+    1, //  228: "Power Razvar Zerno=%4i"
+    1, //  229: "Power Varka Zerno=%4i"
+    0, //  230: "Period Refresh Server(sec)=%3u"
+    1, //  231: "U Peregrev=%3uV"
+    1, //  232: "Urv Barda=%4i Barda(%4u)"
+    1, //  233: "Provod SR=%4i"
+    1, //  234: "Time Stab (+/-) Kolonna=%5isec"
+    1, //  235: "Edit T & CHIM Count CHIM=%3i"
+    1, //  236: "Auto - CHIM=%3i"
+    1, //  237: "Auto + CHIM=%3i"
+    1, //  238: "Time Auto + CHIM=%5isec"
+    1, //  239: "Time reStab(+/-) Kolonna=%5isec"
+    1, //  240: "Beer Pause Count =%3i"
+    1, //  241: "Power correct ASC712 =%3i"
+    USE_GSM_WIFI, //  242: "Server adr= %3u.%3u.%3u.%3u"
+    USE_GSM_WIFI, //  243: "Server port= %u"
+    USE_GSM_WIFI, //  244: "ID Device= %s"
+    USE_GSM_WIFI, //  245: "My Phone= %s"
+    1, //  246: "Alarm Pressure MPX5010=%i"
+    1, //  247: "Use Avtonom HLD=%i"
+    1, //  248: "Time Open BRD=%i"
+    1, //  249: "PID Paramters %4i %4i %4i"
+    1, //  250: "min %% CHIM  Otbor SR=%2i"
+    1, //  251: "Edit Temp Stab Rectif=%3i"
+    1, //  252: "Beg %% CHIM  Otbor SR=%2i"
+    1, //  253: "Popr MPX=%4i %4i/%4i"
+    1, //  254: "Power NBK=%4i"
+    USE_GSM_WIFI, //  255: "Wi-Fi AP= %s"
+    USE_GSM_WIFI, //  256: "Wi-Fi Password= %s"
+    1, //  257: "Fraction Dist Count =%3i"
+    1, //  258: "Fraction Rectif Count =%3i"
+    1, //  259: "Temp Zasyp Zator=%3i"
+    1, //  260: "Temp Osahariv Zator=%3i"
+    1, //  261: "Temp Brogenia Zator=%3i"
+    0, //  262: "PhasePW %5i= %4i+%4i+%4i"
+    0, //  263: "Phase%% %3i= %3i + %3i + %3i"
+    1, //  264: "min Pressure NBK=%3i+%3i=%3i"
+    1, //  265: "delta Pressure NBK=%3i+%3i=%3i"
+    1, //  266: "time Pressure NBK=%3i"
+    1, //  267: "Upravl Nasos NBK=%3i"
+    1 //  268: "%% otbor Tsarga Paster(+/-)=%3i"
+#if ENABLE_SENSOR_SORTING
+    ,
+    1 //  269: Поправки к датчикам
+#endif
+#if USE_BMP280_SENSOR
+    ,
+    1 // case 270: Датчик давления
+#endif
+};
+
+const bool settingsEnableFlagRect[SETTINGS_ITEMS] = {
+    //Ректификация
+    0, //  200: "Max_t_Tst=%5i"
+    1, //  201: "Power TEN=%5u"
+    0, //  202: "Power Reg=%5u"
+    0, //  203: "ParamUSART=%u"
+    USE_GSM_WIFI, //  204: "ParamGSM=%u"
+    0, //  205: "dtTermostat=%3i"
+    0, //  206: "Temp 1 Nedrobn Distill=%3i"
+    0, //  207: "Temp 2 Drobn Distill=%3i"
+    0, //  208: "Temp 3 Drobn Distill=%3i"
+    1, //  209: "Temp Razgon Rect (+Kub,-Kol)=%3i"
+    1, //  210: "Power Rectif=%3i"
+    1, //  211: "Vvod Popravok ds18b20 "
+    0, //  212: "Temp Okon Otbor Glv Rectif=%3i"
+    1, //  213: "CHIM Otbor GLV Rectif=%5u"
+    1, //  214: "%% CHIM Otbor GLV Rectif=%3i"
+    1, //  215: "CHIM Otbor SR Rectif=%5u"
+    1, //  216: "Delta Otbor SR Rectif=%3u"
+    1, //  217: "Temp Okon Otbor SR Rectif=%3i"
+    1, //  218: "Temp Okon Rectif=%3i"
+    0, //  219: "Power GLV simple Distill=%4i"
+    0, //  220: "Power simple Distill=%4i"
     0, //  221: "Temp Begin Dist (+Def -Kub)=%3i"
     0, //  222: "Temp Distill With Defl=%3i"
     0, //  223: "Delta Distill With Defl=%3i"
     0, //  224: "Temp Kub Okon DistWithDefl=%3i"
-    0, //  225: "BeepEndProc=%1u"
-    0, //  226: "BeepStateProc=%1u"
-    0, //  227: "BeepKeyPress=%1u"
+    1, //  225: "BeepEndProc=%1u"
+    1, //  226: "BeepStateProc=%1u"
+    1, //  227: "BeepKeyPress=%1u"
     0, //  228: "Power Razvar Zerno=%4i"
     0, //  229: "Power Varka Zerno=%4i"
     0, //  230: "Period Refresh Server(sec)=%3u"
@@ -360,12 +478,12 @@ const bool settingsEnableFlag[SETTINGS_ITEMS] = {
     0, //  232: "Urv Barda=%4i Barda(%4u)"
     1, //  233: "Provod SR=%4i"
     1, //  234: "Time Stab (+/-) Kolonna=%5isec"
-    0, //  235: "Edit T & CHIM Count CHIM=%3i"
+    1, //  235: "Edit T & CHIM Count CHIM=%3i"
     1, //  236: "Auto - CHIM=%3i"
     1, //  237: "Auto + CHIM=%3i"
     1, //  238: "Time Auto + CHIM=%5isec"
     1, //  239: "Time reStab(+/-) Kolonna=%5isec"
-    1, //  240: "Beer Pause Count =%3i"
+    0, //  240: "Beer Pause Count =%3i"
     1, //  241: "Power correct ASC712 =%3i"
     USE_GSM_WIFI, //  242: "Server adr= %3u.%3u.%3u.%3u"
     USE_GSM_WIFI, //  243: "Server port= %u"
@@ -378,6 +496,87 @@ const bool settingsEnableFlag[SETTINGS_ITEMS] = {
     1, //  250: "min %% CHIM  Otbor SR=%2i"
     1, //  251: "Edit Temp Stab Rectif=%3i"
     1, //  252: "Beg %% CHIM  Otbor SR=%2i"
+    1, //  253: "Popr MPX=%4i %4i/%4i"
+    0, //  254: "Power NBK=%4i"
+    USE_GSM_WIFI, //  255: "Wi-Fi AP= %s"
+    USE_GSM_WIFI, //  256: "Wi-Fi Password= %s"
+    0, //  257: "Fraction Dist Count =%3i"
+    1, //  258: "Fraction Rectif Count =%3i"
+    0, //  259: "Temp Zasyp Zator=%3i"
+    0, //  260: "Temp Osahariv Zator=%3i"
+    0, //  261: "Temp Brogenia Zator=%3i"
+    0, //  262: "PhasePW %5i= %4i+%4i+%4i"
+    0, //  263: "Phase%% %3i= %3i + %3i + %3i"
+    0, //  264: "min Pressure NBK=%3i+%3i=%3i"
+    0, //  265: "delta Pressure NBK=%3i+%3i=%3i"
+    0, //  266: "time Pressure NBK=%3i"
+    0, //  267: "Upravl Nasos NBK=%3i"
+    1 //  268: "%% otbor Tsarga Paster(+/-)=%3i"
+#if ENABLE_SENSOR_SORTING
+    ,
+    1 //  269: Поправки к датчикам
+#endif
+#if USE_BMP280_SENSOR
+    ,
+    1 // case 270: Датчик давления
+#endif
+};
+
+const bool settingsEnableFlagNBK[SETTINGS_ITEMS] = {
+    //НБК
+    0, //  200: "Max_t_Tst=%5i"
+    1, //  201: "Power TEN=%5u"
+    0, //  202: "Power Reg=%5u"
+    0, //  203: "ParamUSART=%u"
+    USE_GSM_WIFI, //  204: "ParamGSM=%u"
+    0, //  205: "dtTermostat=%3i"
+    0, //  206: "Temp 1 Nedrobn Distill=%3i"
+    0, //  207: "Temp 2 Drobn Distill=%3i"
+    0, //  208: "Temp 3 Drobn Distill=%3i"
+    0, //  209: "Temp Razgon Rect (+Kub,-Kol)=%3i"
+    0, //  210: "Power Rectif=%3i"
+    1, //  211: "Vvod Popravok ds18b20 "
+    0, //  212: "Temp Okon Otbor Glv Rectif=%3i"
+    0, //  213: "CHIM Otbor GLV Rectif=%5u"
+    0, //  214: "%% CHIM Otbor GLV Rectif=%3i"
+    0, //  215: "CHIM Otbor SR Rectif=%5u"
+    0, //  216: "Delta Otbor SR Rectif=%3u"
+    0, //  217: "Temp Okon Otbor SR Rectif=%3i"
+    0, //  218: "Temp Okon Rectif=%3i"
+    0, //  219: "Power GLV simple Distill=%4i"
+    0, //  220: "Power simple Distill=%4i"
+    0, //  221: "Temp Begin Dist (+Def -Kub)=%3i"
+    0, //  222: "Temp Distill With Defl=%3i"
+    0, //  223: "Delta Distill With Defl=%3i"
+    0, //  224: "Temp Kub Okon DistWithDefl=%3i"
+    1, //  225: "BeepEndProc=%1u"
+    1, //  226: "BeepStateProc=%1u"
+    1, //  227: "BeepKeyPress=%1u"
+    0, //  228: "Power Razvar Zerno=%4i"
+    0, //  229: "Power Varka Zerno=%4i"
+    0, //  230: "Period Refresh Server(sec)=%3u"
+    1, //  231: "U Peregrev=%3uV"
+    0, //  232: "Urv Barda=%4i Barda(%4u)"
+    0, //  233: "Provod SR=%4i"
+    0, //  234: "Time Stab (+/-) Kolonna=%5isec"
+    0, //  235: "Edit T & CHIM Count CHIM=%3i"
+    0, //  236: "Auto - CHIM=%3i"
+    0, //  237: "Auto + CHIM=%3i"
+    0, //  238: "Time Auto + CHIM=%5isec"
+    0, //  239: "Time reStab(+/-) Kolonna=%5isec"
+    0, //  240: "Beer Pause Count =%3i"
+    1, //  241: "Power correct ASC712 =%3i"
+    USE_GSM_WIFI, //  242: "Server adr= %3u.%3u.%3u.%3u"
+    USE_GSM_WIFI, //  243: "Server port= %u"
+    USE_GSM_WIFI, //  244: "ID Device= %s"
+    USE_GSM_WIFI, //  245: "My Phone= %s"
+    1, //  246: "Alarm Pressure MPX5010=%i"
+    0, //  247: "Use Avtonom HLD=%i"
+    0, //  248: "Time Open BRD=%i"
+    0, //  249: "PID Paramters %4i %4i %4i"
+    0, //  250: "min %% CHIM  Otbor SR=%2i"
+    0, //  251: "Edit Temp Stab Rectif=%3i"
+    0, //  252: "Beg %% CHIM  Otbor SR=%2i"
     1, //  253: "Popr MPX=%4i %4i/%4i"
     1, //  254: "Power NBK=%4i"
     USE_GSM_WIFI, //  255: "Wi-Fi AP= %s"
@@ -393,6 +592,87 @@ const bool settingsEnableFlag[SETTINGS_ITEMS] = {
     1, //  265: "delta Pressure NBK=%3i+%3i=%3i"
     1, //  266: "time Pressure NBK=%3i"
     1, //  267: "Upravl Nasos NBK=%3i"
+    0 //  268: "%% otbor Tsarga Paster(+/-)=%3i"
+#if ENABLE_SENSOR_SORTING
+    ,
+    1 //  269: Поправки к датчикам
+#endif
+#if USE_BMP280_SENSOR
+    ,
+    0 // case 270: Датчик давления
+#endif
+};
+
+const bool settingsEnableFlagDistill[SETTINGS_ITEMS] = {
+    //Дистилляция
+    0, //  200: "Max_t_Tst=%5i"
+    1, //  201: "Power TEN=%5u"
+    0, //  202: "Power Reg=%5u"
+    0, //  203: "ParamUSART=%u"
+    USE_GSM_WIFI, //  204: "ParamGSM=%u"
+    0, //  205: "dtTermostat=%3i"
+    1, //  206: "Temp 1 Nedrobn Distill=%3i"
+    0, //  207: "Temp 2 Drobn Distill=%3i"
+    0, //  208: "Temp 3 Drobn Distill=%3i"
+    0, //  209: "Temp Razgon Rect (+Kub,-Kol)=%3i"
+    0, //  210: "Power Rectif=%3i"
+    1, //  211: "Vvod Popravok ds18b20 "
+    0, //  212: "Temp Okon Otbor Glv Rectif=%3i"
+    0, //  213: "CHIM Otbor GLV Rectif=%5u"
+    0, //  214: "%% CHIM Otbor GLV Rectif=%3i"
+    0, //  215: "CHIM Otbor SR Rectif=%5u"
+    0, //  216: "Delta Otbor SR Rectif=%3u"
+    0, //  217: "Temp Okon Otbor SR Rectif=%3i"
+    0, //  218: "Temp Okon Rectif=%3i"
+    1, //  219: "Power GLV simple Distill=%4i"
+    1, //  220: "Power simple Distill=%4i"
+    1, //  221: "Temp Begin Dist (+Def -Kub)=%3i"
+    1, //  222: "Temp Distill With Defl=%3i"
+    1, //  223: "Delta Distill With Defl=%3i"
+    1, //  224: "Temp Kub Okon DistWithDefl=%3i"
+    1, //  225: "BeepEndProc=%1u"
+    1, //  226: "BeepStateProc=%1u"
+    1, //  227: "BeepKeyPress=%1u"
+    0, //  228: "Power Razvar Zerno=%4i"
+    0, //  229: "Power Varka Zerno=%4i"
+    0, //  230: "Period Refresh Server(sec)=%3u"
+    1, //  231: "U Peregrev=%3uV"
+    0, //  232: "Urv Barda=%4i Barda(%4u)"
+    0, //  233: "Provod SR=%4i"
+    0, //  234: "Time Stab (+/-) Kolonna=%5isec"
+    0, //  235: "Edit T & CHIM Count CHIM=%3i"
+    0, //  236: "Auto - CHIM=%3i"
+    0, //  237: "Auto + CHIM=%3i"
+    0, //  238: "Time Auto + CHIM=%5isec"
+    0, //  239: "Time reStab(+/-) Kolonna=%5isec"
+    0, //  240: "Beer Pause Count =%3i"
+    1, //  241: "Power correct ASC712 =%3i"
+    USE_GSM_WIFI, //  242: "Server adr= %3u.%3u.%3u.%3u"
+    USE_GSM_WIFI, //  243: "Server port= %u"
+    USE_GSM_WIFI, //  244: "ID Device= %s"
+    USE_GSM_WIFI, //  245: "My Phone= %s"
+    1, //  246: "Alarm Pressure MPX5010=%i"
+    1, //  247: "Use Avtonom HLD=%i"
+    0, //  248: "Time Open BRD=%i"
+    0, //  249: "PID Paramters %4i %4i %4i"
+    0, //  250: "min %% CHIM  Otbor SR=%2i"
+    0, //  251: "Edit Temp Stab Rectif=%3i"
+    0, //  252: "Beg %% CHIM  Otbor SR=%2i"
+    1, //  253: "Popr MPX=%4i %4i/%4i"
+    0, //  254: "Power NBK=%4i"
+    USE_GSM_WIFI, //  255: "Wi-Fi AP= %s"
+    USE_GSM_WIFI, //  256: "Wi-Fi Password= %s"
+    0, //  257: "Fraction Dist Count =%3i"
+    0, //  258: "Fraction Rectif Count =%3i"
+    0, //  259: "Temp Zasyp Zator=%3i"
+    0, //  260: "Temp Osahariv Zator=%3i"
+    0, //  261: "Temp Brogenia Zator=%3i"
+    0, //  262: "PhasePW %5i= %4i+%4i+%4i"
+    0, //  263: "Phase%% %3i= %3i + %3i + %3i"
+    0, //  264: "min Pressure NBK=%3i+%3i=%3i"
+    0, //  265: "delta Pressure NBK=%3i+%3i=%3i"
+    0, //  266: "time Pressure NBK=%3i"
+    0, //  267: "Upravl Nasos NBK=%3i"
     0 //  268: "%% otbor Tsarga Paster(+/-)=%3i"
 #if ENABLE_SENSOR_SORTING
     ,
@@ -421,11 +701,11 @@ const bool screenEnableFlag[SCREEN_ITEMS] = {
     1, // 4
     1, // 5
     1, // 6
-    1, // 7
+    0, // 7
     1, // 8
-    1, // 9
+    0, // 9
     1, // 10
-    1 // 11
+    0 // 11
 };
 
 // Update 2018-09-15
@@ -489,3 +769,24 @@ const unsigned char dsSensorPreset[DS18B20_PRESET_NUM][MAX_DS1820][8] = {
 }; // dsSensorPreset[][][]
 
 #endif
+
+// IspReg mode constants
+#define ISPREG_DISPLAY 101 // Мониторинг
+#define ISPREG_THERMOSTAT 102 // Термостат
+#define ISPREG_POWER_REGULATOR 103 // Регулятор мощности
+#define ISPREG_1_DIST 104 // Первый (недробный) отбор
+#define ISPREG_OTBOR_GOLOV 105 // Отбор голов
+#define ISPREG_2_DIST 106 // Второй дробный отбор
+#define ISPREG_3_DIST 107 // Третий дробный отбор
+#define ISPREG_ZATOR 108 // Затор зерна
+#define ISPREG_RECT 109 // Ректификация
+#define ISPREG_DEFL_DIST 110 // Дистилляция с дефлегматором
+#define ISPREG_NDRF 111 // НДРФ
+#define ISPREG_NBK 112 // Непрерывная бражная колонна (НБК)
+#define ISPREG_ZATOR_MUKI 113 // Мучно-солодовый затор (без варки)
+#define ISPREG_RAZVAR 114 // Разваривание зерна с чиллером и миксером
+#define ISPREG_TIMER 115 // Таймер + регулятор мощности
+#define ISPREG_BRAUMASTER 116 // Пивоварня (клон Braumaster)
+#define ISPREG_FRACTION_DIST 117 // Фракционная перегонка
+#define ISPREG_FRACTION_RECT 118 // Фракционная ректификация
+#define ISPREG_VALVE_TEST 129 // Тест клапанов

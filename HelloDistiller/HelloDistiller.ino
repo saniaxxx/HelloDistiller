@@ -352,13 +352,23 @@ ISR(TIMER5_COMPB_vect)
 {
     #if USE_12V_PWM
         // Просто включаем здесь клапана по таймеру, имитируя ШИМ 100Гц
-        for (byte i=0; i<MAX_KLP; i++)
+        for (byte i=0; i<MAX_KLP; i++) {
+			// Если клапан в ручном режиме, то пропускаем регулировку
+			if (KlManualMode[i])
+				continue;
+
             if (KlReg[i]==1 && KlState[i]==1) 
-                digitalWrite(PIN_KLP_BEG+i, KLP_HIGH);   
+                digitalWrite(PIN_KLP_BEG+i, KLP_HIGH);  
+		}
 	#elif USE_BRESENHAM_ASC712==0 && SIMPLED_VERSION!=20
           byte i;
           for (i=0;i<MAX_KLP;i++)
-          {   // Если клапан в режиме ШИМ и Состояние клапана включен, то включаем его 
+          {   
+			  // Если клапан в ручном режиме, то пропускаем регулировку
+			  if (KlManualMode[i])
+				  continue;
+			  
+			  // Если клапан в режиме ШИМ и Состояние клапана включен, то включаем его 
               #if SIMPLED_VERSION<30
                   if (KlReg[i]==1 && KlState[i]==1) digitalWrite(PIN_KLP_BEG+i, KLP_HIGH); 
               #else
@@ -371,7 +381,12 @@ ISR(TIMER5_COMPB_vect)
               delayMicroseconds(20);       
           
               for (i=0;i<MAX_KLP;i++)
-              { // Если клапан в режиме ШИМ и Состояние клапана включен, то выключаем его 
+              { 
+				  // Если клапан в ручном режиме, то пропускаем регулировку
+				  if (KlManualMode[i])
+					  continue;
+
+				  // Если клапан в режиме ШИМ и Состояние клапана включен, то выключаем его 
                 #if SIMPLED_VERSION<30
                       if (KlReg[i]==1 && KlState[i]==1) digitalWrite(PIN_KLP_BEG+i, !KLP_HIGH);  
                 #else
@@ -577,6 +592,11 @@ void zero_cross_int()  // function to be fired at the zero crossing to dim the l
       //    if (!flSyncKLP) // Если клапана не находятся в режиме синхронизации
       {
           for (i=0;i<MAX_KLP;i++) {
+			  // Если клапан в ручном режиме, то пропускаем регулировку
+			  if (KlManualMode[i])
+				  continue;
+
+
             // Разбираемся с состоянием клапана
             if (KlState[i]==0) {
                 flOpenClose=0;
@@ -639,11 +659,16 @@ void zero_cross_int()  // function to be fired at the zero crossing to dim the l
           // При фазовом управлении кланана надо сначала обесточить, т.к. полевик не симистор - сам он не закроется
 
           boolean bNeed2FireTimer5 = false;
-          for (byte i=0; i<MAX_KLP; i++)
+		  for (byte i = 0; i < MAX_KLP; i++) {
+			  // Если клапан в ручном режиме, то пропускаем регулировку
+			  if (KlManualMode[i])
+				  continue;
+
               if( KlReg[i]==1 && KlState[i]==1 && KlCount[i]>=KPL_FULL_POWER ) {
                   bNeed2FireTimer5 = true;
                   digitalWrite(PIN_KLP_BEG+i, !KLP_HIGH);   
               }
+		  }
         
           if (bNeed2FireTimer5){
               // таймер работает в диапазоне 0-2500

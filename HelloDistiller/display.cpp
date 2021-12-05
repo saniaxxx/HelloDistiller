@@ -6,7 +6,7 @@
 #include "configuration.h"
 #include "declarations.h"
 
-char flNumStrPrint = 0;
+#if USE_CYRILLIC_DISPLAY
 
 #if SHOW_FLOAT_TEMPERATURES
 #define PRINT_TEMPERATURES()                                                                                                                           \
@@ -16,53 +16,92 @@ char flNumStrPrint = 0;
         my_lcdprint(lcd_buffer);                                                                                                                       \
     }
 #else
-#define PRINT_TEMPERATURES()                                                                                                                                                                                     \
-    {                                                                                                                                                                                                            \
-        sprintf_P(lcd_buffer, PSTR("C2 T=%i.%i,%i.%i,%i.%i"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, DS_TEMP(TEMP_RK20) / 10, DS_TEMP(TEMP_RK20) % 10, DS_TEMP(TEMP_TSA) / 10, DS_TEMP(TEMP_TSA) % 10); \
-        my_lcdprint(lcd_buffer);                                                                                                                                                                                 \
+#define PRINT_TEMPERATURES()                                                          \
+    {                                                                                 \
+        sprintf_P(lcd_buffer, PSTR("C2 T=%i.%i,%i.%i,%i.%i"),                         \
+            DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, DS_TEMP(TEMP_RK20) / 10,  \
+            DS_TEMP(TEMP_RK20) % 10, DS_TEMP(TEMP_TSA) / 10, DS_TEMP(TEMP_TSA) % 10); \
+        my_lcdprint(lcd_buffer, 0);                                                   \
     }
 #endif
 
-void my_lcdprint(char* s)
+#if USE_MQTT_BROKER
+static_assert(MQTT_BUFFER_SIZE == LCD_BUFFER_SIZE, "MQTT_BUFFER_SIZE == LCD_BUFFER_SIZE");
+#endif
+
+// Phisik! @2021-03-24
+// Внимание! Тут надо бы все поправить глобально
+// Надо передавать строку и колонку, с которой начинать печатать, прямо в my_lcdprint()
+// Тогда мы сможем нормально нумеровать строки для передачи по mqtt
+// Раньше было 2 строки и первая всегда была первой, теперь их 4 и они в перемешку
+//
+// Я сейчас поставлю тут затычку, но надо сделать все по уму!
+
+int8_t currentCol = -1, currentRow = -1;
+void dirtyTrickSetCursor(int col, int row)
+{
+    lcd.setCursor(col, row);
+    currentCol = col;
+    currentRow = row;
+}
+
+bool bRawOutputStatus[LCD_HEIGHT] = { false };
+
+void dirtyTrickLcdClear()
+{
+    lcd.clear();
+    currentCol = 0;
+    currentRow = 0;
+
+    // clear mqtt buffers to support for empty strings
+    for (int i = 0; i < LCD_HEIGHT; i++) {
+        lcd_mqtt_buf[i][5] = ' ';
+        lcd_mqtt_buf[i][6] = '\0';
+
+        bRawOutputStatus[i] = false;
+    }
+}
+
+void my_lcdprint_P(const char* progmem_string, int row = -1)
+{
+    if (row >= 0)
+        dirtyTrickSetCursor(0, row);
+
+    memcpy_P(lcd_buffer, progmem_string, strlen_P(progmem_string));
+    my_lcdprint(lcd_buffer);
+}
+
+void my_lcdprint(char* s, int row = -1)
 {
     char i;
-    char len;
-    len = strlen(lcd_buffer);
-    for (i = len; i < LCD_WIDTH; i++)
-        s[i] = ' ';
-    s[LCD_WIDTH] = 0;
 
-    if (IspReg == 111 && s[9] == 'R' && flNumStrPrint == 0)
+    if (row >= 0)
+        dirtyTrickSetCursor(0, row);
+    bRawOutputStatus[currentRow] = true;
+
+// MQTT code by max506 & limon
+#if USE_MQTT_BROKER
+
+    if (currentRow >= 0 && currentRow < LCD_HEIGHT) {
+        snprintf_P(lcd_mqtt_buf[currentRow], MQTT_BUFFER_SIZE, fmt_lcd_n, currentRow + 1, s);
+    }
+
+#endif // USE_MQTT_BROKER
+
+    // convert uft8 to Hitachi 44780 encoding
+    utf8rus(s);
+    // fill rest of the screen with spaces
+    const uint8_t l = strlen(s);
+    if (l < LCD_WIDTH) {
+        memset(s + l, ' ', LCD_WIDTH - l);
+        s[21] = 0;
+    }
+
+    if (IspReg == 111 && s[9] == 'R' && currentRow == 0)
         s[9] = 'N';
 
     lcd.print(s);
-
-    // MQTT code by max506 & limon
-#if USE_MQTT_BROKER
-
-    if (flNumStrPrint == 0) {
-
-        snprintf_P(lcd_mqtt_buf1, MQTT_BUFFER_SIZE, fmt_lcd1, s);
-
-        // Убрать завершающие пробелы
-        for (i = strlen(lcd_mqtt_buf1) - 1;; i--) {
-            if (lcd_mqtt_buf1[i] == ' ')
-                lcd_mqtt_buf1[i] = '\0';
-            else
-                break;
-        }
-    } else if (flNumStrPrint == 1) {
-        snprintf_P(lcd_mqtt_buf2, MQTT_BUFFER_SIZE, fmt_lcd2, s);
-
-        // Убрать завершающие пробелы
-        for (i = strlen(lcd_mqtt_buf2) - 1;; i--) {
-            if (lcd_mqtt_buf2[i] == ' ')
-                lcd_mqtt_buf2[i] = '\0';
-            else
-                break;
-        }
-    }
-#endif // USE_MQTT_BROKER
+    currentRow++;
 
 #if USE_GSM_WIFI == 1
 
@@ -90,8 +129,6 @@ void my_lcdprint(char* s)
     }
 #endif
 
-    flNumStrPrint++;
-
 #ifdef TESTMEM
     DEBUG_SERIAL.println(F("\n[memCheck_print]"));
     DEBUG_SERIAL.println(freeRam());
@@ -103,38 +140,42 @@ int V1, V2, V3;
 char str_temp[6];
 char str_cur[8];
 char str_off[8];
+char str_popr[6];
 
 void formTRZGDistill()
 {
     if (TempDeflBegDistil > 0) {
-        sprintf_P(lcd_buffer, PSTR("Te\274\276ep-pa K\171\262a= %i.%i"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10); //Темпер-ра Куба=
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), Power); //Вых.мощность=
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("Te\274\276.\340e\344a= %i.%i/%i.%i"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10, TempDeflBegDistil / 10, TempDeflBegDistil % 10);
-    } //Темп.Дефа=
-    else {
-        sprintf_P(lcd_buffer, PSTR("Te\274\276.\340e\344\273e\264\274. = %i.%i"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10);
-        my_lcdprint(lcd_buffer); //Темп.Дефлегм.=
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), Power); //Вых.мощность=
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("Te\274\276.K\171\262a= %i.%i/%i.%i"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, -TempDeflBegDistil / 10, -TempDeflBegDistil % 10);
-    } //Темп.Куба =
+
+        sprintf_P(lcd_buffer, PSTR("Куб       = %i.%i \337С"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10); //9.04.21 Темпер-ра Куба=
+        my_lcdprint(lcd_buffer, 2);
+
+        sprintf_P(lcd_buffer, PSTR("Дeф   = %i.%i/%i.%i \337С"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10, TempDeflBegDistil / 10, TempDeflBegDistil % 10); //9.04.21 Темп.Дефа=
+        my_lcdprint(lcd_buffer, 1);
+
+        sprintf_P(lcd_buffer, PSTR("Полная P     = %4iW"), Power); //8.04.21 Вых.мощность=
+        my_lcdprint(lcd_buffer, 3);
+    } else {
+        sprintf_P(lcd_buffer, PSTR("Дeфлeгматор = %i.%i\337С"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10); //Темп.Дефлегм.=
+        my_lcdprint(lcd_buffer, 2);
+
+        sprintf_P(lcd_buffer, PSTR("Куб    = %i.%i/%i.%i\337С"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, -TempDeflBegDistil / 10, -TempDeflBegDistil % 10); // //9.04.21 Темп.Куба =
+        my_lcdprint(lcd_buffer, 1);
+
+        sprintf_P(lcd_buffer, PSTR("Полная P     = %4iW"), Power); //8.04.21 Вых.мощность=
+        my_lcdprint(lcd_buffer, 3);
+    }
 }
 
 void formTSAErr()
 {
-    sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u \250PEB\256\254EHA"), hour, minute, second); //00:00:00 ПРЕВЫШЕНА
-    my_lcdprint(lcd_buffer);
-    lcd.setCursor(0, 3);
-    sprintf_P(lcd_buffer, PSTR("Te\274\276-pa TCA=%i.%i/%i.%i"), DS_TEMP(TEMP_TSA) / 10, DS_TEMP(TEMP_TSA) % 10, MAX_TEMP_TSA / 10, MAX_TEMP_TSA % 10);
-    my_lcdprint(lcd_buffer); //Темп-ра ТСА=
-    lcd.setCursor(0, 2);
-    sprintf_P(lcd_buffer, PSTR("TEM\250EPAT\251PA TCA!")); //ТЕМПЕРАТУРА ТСА!
+    sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u ПPEBЫШEHA"), hour, minute, second); //00:00:00 ПРЕВЫШЕНА
+    my_lcdprint(lcd_buffer, 0);
+
+    sprintf_P(lcd_buffer, PSTR("  TEMПEPATУPA TCA!")); //ТЕМПЕРАТУРА ТСА!
+    my_lcdprint(lcd_buffer, 1);
+
+    sprintf_P(lcd_buffer, PSTR(" TCA = %i.%i/%i.%i \337C"), DS_TEMP(TEMP_TSA) / 10, DS_TEMP(TEMP_TSA) % 10, MAX_TEMP_TSA / 10, MAX_TEMP_TSA % 10); //24.04.21 Темп-ра ТСА=
+    my_lcdprint(lcd_buffer, 3);
 }
 
 void DisplayRectif()
@@ -144,252 +185,300 @@ void DisplayRectif()
         case 0:
             sprintf_P(lcd_buffer, PSTR("      %02u:%02u:%02u"), hour, minute, second);
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
+
+            dirtyTrickSetCursor(0, 3);
             if (IspReg != 118) {
                 sprintf_P(lcd_buffer, PSTR("                    "));
                 my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 2);
-                sprintf_P(lcd_buffer, PSTR("    PEKT\245\252\245KA\341\245\245")); //РЕКТИФИКАЦИИ
+                dirtyTrickSetCursor(0, 2);
+                sprintf_P(lcd_buffer, PSTR("    PEKTИФИKAЦИИ")); //РЕКТИФИКАЦИИ
                 my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("       PE\243\245M")); //РЕЖИМ
+                sprintf_P(lcd_buffer, PSTR("       PEЖИM")); //РЕЖИМ
+                my_lcdprint(lcd_buffer, 1);
             } else {
-                sprintf_P(lcd_buffer, PSTR("    PEKT\245\252\245KA\341\245\245")); //РЕКТИФИКАЦИИ
+                sprintf_P(lcd_buffer, PSTR("    PEKTИФИKAЦИИ")); //РЕКТИФИКАЦИИ
                 my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 2);
-                sprintf_P(lcd_buffer, PSTR("    \252PAK\341\245OHHO\246")); //ФРАКЦИОННОЙ
+                dirtyTrickSetCursor(0, 2);
+                sprintf_P(lcd_buffer, PSTR("    ФPAKЦИOHHOЙ")); //ФРАКЦИОННОЙ
                 my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("       PE\243\245M")); //РЕЖИМ
+                sprintf_P(lcd_buffer, PSTR("       PEЖИM")); //РЕЖИМ
+                my_lcdprint(lcd_buffer, 1);
             }
             break;
         case 1: //Не запущено
-            lcd.clear();
-            lcd.setCursor(0, 1);
-            sprintf_P(lcd_buffer, PSTR("       \243\340\245TE \356"));
-            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR("       ЖДИTE \356"));
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 2: //Разгон
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u PA\244\241OH"), hour, minute, second); //РАЗГОН
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u PAЗГOH"), hour, minute, second); //РАЗГОН
             my_lcdprint(lcd_buffer);
+
             if (tEndRectRazgon > 0) {
-                sprintf_P(lcd_buffer, PSTR("\272\171\262a = %i.%i/%i.%i"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, tEndRectRazgon / 10, tEndRectRazgon % 10);
-                my_lcdprint(lcd_buffer); //куба =
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), UstPower); //Вых.мощность=
-                my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 2);
-                sprintf_P(lcd_buffer, PSTR("Te\274\276.o\272o\275\300.pa\267\264o\275a")); //Темп. оконч. разгона
+
+                sprintf_P(lcd_buffer, PSTR("Окончание по темп-ре")); //2.04.21 Темп. оконч. разгона
+                my_lcdprint(lcd_buffer, 1);
+
+                sprintf_P(lcd_buffer, PSTR("кубa = %i.%i/%i.%i \337C"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, tEndRectRazgon / 10, tEndRectRazgon % 10); //10.04.21 куба =
+                my_lcdprint(lcd_buffer, 2);
+
+                sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.мощность=
+                my_lcdprint(lcd_buffer, 3);
+
             } else {
-                sprintf_P(lcd_buffer, PSTR("\272o\273o\275\275\303 =  %i.%i/%i.%i"), DS_TEMP(TEMP_RK20) / 10, DS_TEMP(TEMP_RK20) % 10, -tEndRectRazgon / 10, -tEndRectRazgon % 10);
-                my_lcdprint(lcd_buffer); //колонны =
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), UstPower); //Вых.мощность=
-                my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 2);
-                sprintf_P(lcd_buffer, PSTR("Te\274\276.o\272o\275\300.pa\267\264o\275a")); //Темп. оконч. разгона
+                sprintf_P(lcd_buffer, PSTR("Окончание по темп-ре")); //2.04.21 Темп. оконч. разгона
+                my_lcdprint(lcd_buffer, 1);
+
+                sprintf_P(lcd_buffer, PSTR("кoлoнны  %i.%i/%i.%i\337C"), DS_TEMP(TEMP_RK20) / 10, DS_TEMP(TEMP_RK20) % 10, -tEndRectRazgon / 10, -tEndRectRazgon % 10); //10.04.21 колонны =
+                my_lcdprint(lcd_buffer, 2);
+
+                sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.мощность=
+                my_lcdprint(lcd_buffer, 3);
             }
             break;
 
         case 3: //Стабилицация колонны
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u PA\240OTA"), hour, minute, second); //00:00:00 РАБОТА
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u PAБOTA"), hour, minute, second); //00:00:00 РАБОТА
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 =%4iW"), PowerRect); //Вых.мощность=
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Заданная P   = %4iW"), PowerRect); //2.04.21 Вых.мощность=
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("PK(20) = %i.%i(%3i)"), DS_TEMP(TEMP_RK20) / 10, DS_TEMP(TEMP_RK20) % 10, (IspReg == 111 ? (int)(SecOstatok) : (int)(Seconds - SecTempPrev)));
+            dirtyTrickSetCursor(0, 2);
+            sprintf_P(lcd_buffer, PSTR("PK(20) = %i.%i(%3i)"), DS_TEMP(TEMP_RK20) / 10, DS_TEMP(TEMP_RK20) % 10, (IspReg == 111 ? (int)(SecOstatok) : (int)(Seconds - SecTempPrev))); //12.04.21
             my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("KO\247OHH\256 HA CE\240\261 \356")); //КОЛОННЫ НА СЕБЯ (шестигранник)
+            sprintf_P(lcd_buffer, PSTR("KOЛOHHЫ HA CEБЯ \356")); //КОЛОННЫ НА СЕБЯ (шестигранник)
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 4: //Отбор голов
             if (IspReg != 118) {
-                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OT\240OP \241O\247OB"), hour, minute, second); //00:00:00 ОТБОР ГОЛОВ
+                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OTБOP ГOЛOB"), hour, minute, second); //00:00:00 ОТБОР ГОЛОВ
                 my_lcdprint(lcd_buffer);
+
                 if (UrovenProvodimostSR == 0) {
-                    sprintf_P(lcd_buffer, PSTR("\277e\274\276.K\171\262a= %i.%i/%i.%i"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, tEndRectOtbGlv / 10, tEndRectOtbGlv % 10); //Вых.мощность=
-                    my_lcdprint(lcd_buffer); //темп.Кубa=
-                    lcd.setCursor(0, 3);
-                    sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304=  %4iW"), PowerRect); //Вых.мощность=
-                    my_lcdprint(lcd_buffer);
-                    sprintf_P(lcd_buffer, PSTR("O\272o\275\300a\275\270e o\277\262opa \276o")); //Окончание отбора по
+                    sprintf_P(lcd_buffer, PSTR("Окончание по темп-ре")); //Окончание отбора по
+                    my_lcdprint(lcd_buffer, 1);
+
+                    sprintf_P(lcd_buffer, PSTR("кубa = %i.%i/%i.%i \337С"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, tEndRectOtbGlv / 10, tEndRectOtbGlv % 10); //10.04.21
+                    my_lcdprint(lcd_buffer, 2);
+
+                    sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), PowerRect); //3.04.21 Вых.мощность=
+                    my_lcdprint(lcd_buffer, 3);
                 } else {
                     if (UrovenProvodimostSR > 0) {
                         if (UrovenProvodimostSR == 2) {
-                            sprintf_P(lcd_buffer, PSTR("\343a\277\300\270\272\171= %3i/%3i"), U_GLV, UROVEN_ALARM); //датчику =
+                            sprintf_P(lcd_buffer, PSTR("дaтчику = %3i/%3i"), U_GLV, UROVEN_ALARM); //датчику =
+                            my_lcdprint(lcd_buffer, 2);
+                            dirtyTrickSetCursor(0, 3);
+                            sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), PowerRect); //3.04.21 Вых.мощность=
                             my_lcdprint(lcd_buffer);
-                            lcd.setCursor(0, 3);
-                            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304= %4iW"), PowerRect); //Вых.мощность=
-                            my_lcdprint(lcd_buffer);
-                            sprintf_P(lcd_buffer, PSTR("O\272o\275\300.\276o a\275a\273o\264o\263o\274\171")); //Оконч.по аналоговому
+                            sprintf_P(lcd_buffer, PSTR("Oкoнчание пo aнaлoг.")); //3.04.21 Оконч.по аналоговому
+                            my_lcdprint(lcd_buffer, 1);
                         } else {
-                            sprintf_P(lcd_buffer, PSTR("\343a\277\300\270\272\171= %3i/%3i"), U_GLV, UrovenProvodimostSR); //датчику =
+                            sprintf_P(lcd_buffer, PSTR("дaтчику = %3i/%3i"), U_GLV, UrovenProvodimostSR); //датчику =
+                            my_lcdprint(lcd_buffer, 2);
+                            dirtyTrickSetCursor(0, 3);
+                            sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), PowerRect); //3.04.21 Вых.мощность=
                             my_lcdprint(lcd_buffer);
-                            lcd.setCursor(0, 3);
-                            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304= %4iW"), PowerRect); //Вых.мощность=
-                            my_lcdprint(lcd_buffer);
-                            sprintf_P(lcd_buffer, PSTR("O\272o\275\300.\276o \345\270\344po\263o\274\171")); //Оконч.по цифровому
+                            sprintf_P(lcd_buffer, PSTR("Oкoнчание пo цифp.")); //3.04.21 Оконч.по цифровому
+                            my_lcdprint(lcd_buffer, 1);
                         }
                     } else {
-                        sprintf_P(lcd_buffer, PSTR("\270c\277.\263pe\274e\275\270=%3i/%3i"), (int)SecOstatok, -UrovenProvodimostSR); //ист.времени=
+                        sprintf_P(lcd_buffer, PSTR("вpeмeни =%3i/%3i мин"), (int)SecOstatok * 10, -UrovenProvodimostSR * 10); //6.05.21 ист.времени=
+                        my_lcdprint(lcd_buffer, 2);
+                        dirtyTrickSetCursor(0, 3);
+                        sprintf_P(lcd_buffer, PSTR("Заданная P = %4iW"), PowerRect); //3.04.21 Вых.мощность=
                         my_lcdprint(lcd_buffer);
-                        lcd.setCursor(0, 3);
-                        sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304= %4iW"), PowerRect); //Вых.мощность=
-                        my_lcdprint(lcd_buffer);
-                        sprintf_P(lcd_buffer, PSTR("O\272o\275\300a\275\270e o\277\262opa \276o")); //Окончание отбора по
+                        sprintf_P(lcd_buffer, PSTR("Oкoнчaниe oтбopa пo")); //Окончание отбора по
+                        my_lcdprint(lcd_buffer, 1);
                     }
                 }
             } else {
-                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OT\240OP \241O\247OB"), hour, minute, second); //00:00:00 ОТБОР ГОЛОВ
+                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OTБOP ГOЛOB"), hour, minute, second); //00:00:00 ОТБОР ГОЛОВ
                 my_lcdprint(lcd_buffer);
 
                 if (TekFraction < CountFractionRect)
                     V2 = TempFractionRect[TekFraction];
                 if (V2 >= 0) {
-                    lcd.setCursor(0, 3);
-                    sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), UstPower); //Вых.мощность=
+                    dirtyTrickSetCursor(0, 3);
+                    sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.мощность=
                     my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 2);
-                    sprintf_P(lcd_buffer, PSTR("Te\274\276.K\171\262a=%i.%i/%i.%i"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, V2 / 10, V2 % 10);
-                    my_lcdprint(lcd_buffer); //Темп.Куба=
-                    sprintf_P(lcd_buffer, PSTR("\252pa\272\345\270\307 = %1i/%1i"), (int)TekFraction + 1, (int)CountFractionRect); //Фракция =
+
+                    dirtyTrickSetCursor(0, 2);
+                    sprintf_P(lcd_buffer, PSTR("Куб  = %i.%i/%i.%i \337С"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, V2 / 10, V2 % 10); //10.04.21 Темп.Куба=
+                    my_lcdprint(lcd_buffer);
+
+                    sprintf_P(lcd_buffer, PSTR("Фpaкция      = %1i/%1i"), (int)TekFraction + 1, (int)CountFractionRect); //Фракция =
+                    my_lcdprint(lcd_buffer, 1);
                 } else {
-                    lcd.setCursor(0, 3);
-                    sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), UstPower); //Вых.мощность=
+                    dirtyTrickSetCursor(0, 3);
+                    sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.мощность=
+
                     my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 2);
-                    sprintf_P(lcd_buffer, PSTR("O\272o\275\300.o\277\262opa:%5i"), (int)SecOstatok); //Оконч.отбора:
+                    dirtyTrickSetCursor(0, 2);
+                    sprintf_P(lcd_buffer, PSTR("Oкoнчание:  %5iсек"), (int)SecOstatok); //Оконч.отбора:
+
                     my_lcdprint(lcd_buffer);
-                    sprintf_P(lcd_buffer, PSTR("Te\274\276.K\171\262a=%i.%i/%i.%i"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, V2 / 10, V2 % 10);
-                } //Темп.Куба=
+                    sprintf_P(lcd_buffer, PSTR("Куб   = %i.%i/%i.%i \337С"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, V2 / 10, V2 % 10); //10.04.21 Темп.Куба=
+                    my_lcdprint(lcd_buffer, 1);
+                }
             }
             break;
         case 5: //Стоп, ожидание возврата температуры
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u PEKT.<CTO\250>"), hour, minute, second); //00:00:00 РЕКТ.<СТОП>
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u PEKT.<CTOП>"), hour, minute, second); //00:00:00 РЕКТ.<СТОП>
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("o\277\262opa C\250\245PTA =%2i%%"), ProcChimSR); //отбора СПИРТА =
+
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("oтбopa CПИPTA  = %2i%%"), ProcChimSR); //отбора СПИРТА =
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("Te\272\171\346\270\271 \276po\345e\275\277")); //Текущий процент
+
+            dirtyTrickSetCursor(0, 2);
+            sprintf_P(lcd_buffer, PSTR("Teкущий пpoцeнт")); //Текущий процент
             my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.Ko\273=%i.%i/%i.%i"), DS_TEMP(TEMP_RK20) / 10, DS_TEMP(TEMP_RK20) % 10, tStabSR / 10, tStabSR % 10);
-            break; //Темп.Kол=
+
+            sprintf_P(lcd_buffer, PSTR("Koлонна =%i.%i/%i.%i\337С"), DS_TEMP(TEMP_RK20) / 10, DS_TEMP(TEMP_RK20) % 10, tStabSR / 10, tStabSR % 10); //10.04.21 Темп.Kол=
+            my_lcdprint(lcd_buffer, 1);
+            break;
         case 6: //Ректификация
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OT\240OP C\250\245PT"), hour, minute, second); //00:00:00 ОТБОР СПИРТ
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OTБOP CПИPT"), hour, minute, second); //00:00:00 ОТБОР СПИРТ
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("\340a\263\273=%i.%i,Mo\346\275=%4iW"), U_MPX5010 / 10, U_MPX5010 % 10, FactPower);
-            my_lcdprint(lcd_buffer); //Давл=    ,Мощн=
-            lcd.setCursor(0, 2);
+
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Дaвление  = %i.%immHg"), U_MPX5010 / 10, abs(U_MPX5010 % 10)); //10.04.21 Давл=    ,Мощн=
+            my_lcdprint(lcd_buffer);
+
+            dirtyTrickSetCursor(0, 2);
             sprintf_P(lcd_buffer, PSTR("PK(20)=%i.%i/%i.%i %i.%i"), DS_TEMP(TEMP_RK20) / 10, DS_TEMP(TEMP_RK20) % 10, (tStabSR + tDeltaRect) / 10, (tStabSR + tDeltaRect) % 10, tDeltaRect / 10, tDeltaRect % 10);
             my_lcdprint(lcd_buffer); //PK(20)=
-            sprintf_P(lcd_buffer, PSTR("\250po\345e\275\277 o\277\262opa = %2i%%"), ProcChimSR); //Процент отбора =
+
+            sprintf_P(lcd_buffer, PSTR("Пpoцeнт oтбopa = %2i%%"), ProcChimSR); //Процент отбора =
+            my_lcdprint(lcd_buffer, 1);
             break;
-        case 7: //Отбор хвостов
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OT\240OP XBOCT"), hour, minute, second); //00:00:00 ОТБОР ХВОСТ
+        case 7: //Отбор хвостов 3.04.21
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OTБOP XBOCT"), hour, minute, second); //00:00:00 ОТБОР ХВОСТ
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), UstPower); //Вых.мощность=
+
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.мощность=
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("\340a\263\273e\275\270e \263 K\171\262e=%i.%i"), U_MPX5010 / 10, U_MPX5010 % 10); //Давление в Кубе=
+
+            dirtyTrickSetCursor(0, 1);
+            sprintf_P(lcd_buffer, PSTR("Температура в")); //3.04.21 Давление в Кубе=
             my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.K\171\262a=%i.%i/%i.%i"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, (IspReg != 118 ? tEndRect : TekTemp) / 10, (IspReg != 118 ? tEndRect : TekTemp) % 10);
-            break; //Темп.Куба=
+
+            sprintf_P(lcd_buffer, PSTR("кубе = %i.%i/%i.%i \337С"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, (IspReg != 118 ? tEndRect : TekTemp) / 10, (IspReg != 118 ? tEndRect : TekTemp) % 10); //10.04.21 Темп.Куба=
+            my_lcdprint(lcd_buffer, 2);
+            break;
         case 8: //Отбор ожидание 3 минуты
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OX\247A\243\340EH\245E"), hour, minute, second); //00:00:00 ОХЛАЖДЕНИE
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OXЛAЖДEHИE"), hour, minute, second); //00:00:00 ОХЛАЖДЕНИE
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), UstPower); //Вых.мощность=
+            dirtyTrickSetCursor(0, 2);
+            sprintf_P(lcd_buffer, PSTR("Температура в")); //3.04.21 Вых.мощность=
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.K\171\262a= %i.%i/%i.%i"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, (IspReg != 118 ? tEndRect : TekTemp) / 10, (IspReg != 118 ? tEndRect : TekTemp) % 10);
-            my_lcdprint(lcd_buffer); //Темп.Куба=
-            sprintf_P(lcd_buffer, PSTR("O\240OP\251\340OBAH\245\261...")); //ОБОРУДОВАНИЯ...
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("кубе = %i.%i/%i.%i \337С"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, (IspReg != 118 ? tEndRect : TekTemp) / 10, (IspReg != 118 ? tEndRect : TekTemp) % 10); //10.04.21 Темп.Куба=
+            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR("OБOPУДOBAHИЯ...")); //ОБОРУДОВАНИЯ...
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 9: //Ожидание датчика уровня
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u O\243\245\340AH\245E"), hour, minute, second); //00:00:00 ОЖИДАНИЕ
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OЖИДAHИE"), hour, minute, second); //00:00:00 ОЖИДАНИЕ
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), UstPower); //Вых.мощность=
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.мощность=
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("\251po\263e\275\304 =%3i/%3i"), U_UROVEN, UROVEN_ALARM); //Уровень =
+            dirtyTrickSetCursor(0, 2);
+            sprintf_P(lcd_buffer, PSTR("Уpoвeнь    = %3i/%3i"), U_UROVEN, UROVEN_ALARM); //Уровень =
             my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("\340AT\253\245KA \251POBH\261 \356")); //ДАТЧИКА УРОВНЯ
+            sprintf_P(lcd_buffer, PSTR("ДATЧИKA УPOBHЯ \356")); //ДАТЧИКА УРОВНЯ
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 100: //Окончание
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u \250PO\341ECC"), hour, minute, second); //00:00:00 ПРОЦЕСС
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u ПPOЦECC"), hour, minute, second); //00:00:00 ПРОЦЕСС
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), UstPower); //Вых.мощность=
+            dirtyTrickSetCursor(0, 2);
+            sprintf_P(lcd_buffer, PSTR("Температура в")); //3.04.21 Вых.мощность=
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.K\171\262a= %i.%i/%i.%i"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, tEndRect / 10, tEndRect % 10);
-            my_lcdprint(lcd_buffer); //Темп.Куба =
-            sprintf_P(lcd_buffer, PSTR("PEKT\245\252\245KA\341\245\245 OKOH\253EH")); //РЕКТИФИКАЦИИ ОКОНЧЕН
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("кубе = %i.%i/%i.%i \337С"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, tEndRect / 10, tEndRect % 10); //10.04.21 Темп.Куба =
+            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR("PEKTИФИKAЦИИ OKOHЧEH")); //РЕКТИФИКАЦИИ ОКОНЧЕН
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 101: //Температура в ТСА превысила предельную
             formTSAErr();
             break;
         case 102: //Давление
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u \340a\263\273e\275\270e"), hour, minute, second); //00:00:00 Давление
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u ДАВЛЕНИЕ"), hour, minute, second); //00:00:00 Давление
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("                    "));
+
+            dirtyTrickSetCursor(0, 2);
+            sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.мощность=
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), UstPower); //Вых.мощность=
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("MPX5010 = %i.%i/%i.%i"), U_MPX5010 / 10, U_MPX5010 % 10, AlarmMPX5010 / 10, AlarmMPX5010 % 10);
+
+            sprintf_P(lcd_buffer, PSTR("Давление = %i.%i/%i.%i"), U_MPX5010 / 10, abs(U_MPX5010 % 10), AlarmMPX5010 / 10, AlarmMPX5010 % 10); //9.04.21
+            my_lcdprint(lcd_buffer, 1);
             break;
         }
     } else {
-        PRINT_TEMPERATURES()
-        if (StateMachine != 5) {
+        PRINT_TEMPERATURES();
+        dirtyTrickSetCursor(0, 1);
+
+        if (StateMachine != 5) { //8.04.21
             if (IspReg != 118) {
                 // Phisik on 2018-07-06 I switched off the 3d screen and place power on the 2nd
-                sprintf_P(lcd_buffer, PSTR("B\303x.\277o\272 =  %i.%iA"), (uint16_t)MaxIOut / 10, (uint16_t)MaxIOut % 10); //Вых.ток =
+                //sprintf_P(lcd_buffer, PSTR("Тoк      =  %i.%iA"), (uint16_t)MaxIOut / 10, (uint16_t)MaxIOut % 10);  //5.04.21 Вых.ток =
+                // sprintf_P(lcd_buffer, PSTR("Фактическая Р =%4iW"), FactPower);                                  //5.04.21 Мощность =
+                //sprintf_P(lcd_buffer, PSTR("Время этапа%02u:%02u:%02u"), ((int)((Seconds - TimeStage) / 3600), (int)((Seconds - TimeStage) % 3600) / 60, (int)((Seconds - TimeStage) % 3600) % 60))); //12.04.21                 //9.04.21   "TimeStage=%02u:%02u:%02u"
+                //dirtyTrickSetCursor(0, 1);
+                //my_lcdprint(lcd_buffer);
+                sprintf_P(lcd_buffer, PSTR("Дaвлeниe  = %i.%immHg"), U_MPX5010 / 10, abs(U_MPX5010 % 10)); //8.04.21 Давление в Кубе=
+                dirtyTrickSetCursor(0, 2);
                 my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("Mo\346\275oc\277\304 = %4iW"), FactPower); //Мощность =
+
+                sprintf_P(lcd_buffer, PSTR("Фактическая Р =%4iW"), FactPower); //8.04.21 Вых.мощность=
+                dirtyTrickSetCursor(0, 3);
                 my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 2);
-                sprintf_P(lcd_buffer, PSTR("Ha\276p\307\266e\275\270e =%3uV"), (uint16_t)MaxVoltsOut); //Напряжение =
+
             } else if (TekFraction < CountFractionRect) {
                 if (TempFractionRect[TekFraction] > 0) {
-                    sprintf_P(lcd_buffer, PSTR("Te\274\276.o\272o\275\300a\275\270\307=%i.%i"), TempFractionRect[TekFraction] / 10, TempFractionRect[TekFraction] % 10);
-                    my_lcdprint(lcd_buffer); //Темп.окончания=
-                    lcd.setCursor(0, 3);
-                    sprintf_P(lcd_buffer, PSTR("\340a\263\273e\275\270e \263 K\171\262e=%i.%i"), U_MPX5010 / 10, U_MPX5010 % 10); //Давление в Кубе=
+                    sprintf_P(lcd_buffer, PSTR("Окoнчaние = %i.%i \337С"), TempFractionRect[TekFraction] / 10, TempFractionRect[TekFraction] % 10); //Темп.окончания=
                     my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 2);
-                    sprintf_P(lcd_buffer, PSTR("\252pa\272\345\270\307 = %1i/%1i"), (int)TekFraction + 1, (int)CountFractionRect); //Фракция =
+                    dirtyTrickSetCursor(0, 3);
+                    sprintf_P(lcd_buffer, PSTR("Дaвлeниe  = %i.%immHg"), U_MPX5010 / 10, abs(U_MPX5010 % 10)); //Давление в Кубе=
+                    my_lcdprint(lcd_buffer);
+                    dirtyTrickSetCursor(0, 2);
+                    sprintf_P(lcd_buffer, PSTR("Фpaкция   = %1i/%1i"), (int)TekFraction + 1, (int)CountFractionRect); //Фракция =
+                    my_lcdprint(lcd_buffer);
                 } else {
-                    sprintf_P(lcd_buffer, PSTR("Bpe\274\307 oc\277a\273oc\304: %4im"), (int)SecOstatok); //Время осталось:
+                    sprintf_P(lcd_buffer, PSTR("Bpeмя ocтaлocь: %4im"), (int)SecOstatok); //Время осталось:
                     my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 3);
-                    sprintf_P(lcd_buffer, PSTR("\340a\263\273e\275\270e \263 K\171\262e=%i.%i"), U_MPX5010 / 10, U_MPX5010 % 10); //Давление в Кубе=
+                    dirtyTrickSetCursor(0, 3);
+                    sprintf_P(lcd_buffer, PSTR("Дaвлeниe  = %i.%immHg"), U_MPX5010 / 10, abs(U_MPX5010 % 10)); //Давление в Кубе=
                     my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 2);
-                    sprintf_P(lcd_buffer, PSTR("\252pa\272\345\270\307 = %1i/%1i"), (int)TekFraction + 1, (int)CountFractionRect); //Фракция =
+                    dirtyTrickSetCursor(0, 2);
+                    sprintf_P(lcd_buffer, PSTR("Фpaкция   = %1i/%1i"), (int)TekFraction + 1, (int)CountFractionRect); //Фракция =
+                    my_lcdprint(lcd_buffer);
                 }
             } else {
-                sprintf_P(lcd_buffer, PSTR("\251po\263e\275\304 \263 Tape=%4u"), U_UROVEN); //Уровень в Таре =
+                sprintf_P(lcd_buffer, PSTR("Уpoвeнь в Tape =%4u"), U_UROVEN); //Уровень в Таре =
                 my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("\340a\263\273e\275\270e \263 K\171\262e=%i.%i"), U_MPX5010 / 10, U_MPX5010 % 10); //Давление в Кубе=
+                dirtyTrickSetCursor(0, 3);
+                sprintf_P(lcd_buffer, PSTR("Дaвлeниe  = %i.%immHg"), U_MPX5010 / 10, abs(U_MPX5010 % 10)); //Давление в Кубе=
                 my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 2);
-                sprintf_P(lcd_buffer, PSTR("\252pa\272\345\270\307 = %1i/%1i"), (int)TekFraction + 1, (int)CountFractionRect); //Фракция =
+                dirtyTrickSetCursor(0, 2);
+                sprintf_P(lcd_buffer, PSTR("Фpaкция   = %1i/%1i"), (int)TekFraction + 1, (int)CountFractionRect); //Фракция =
+                my_lcdprint(lcd_buffer);
             }
         } else {
-            sprintf_P(lcd_buffer, PSTR("Bpe\274\307 Pec\277a\262. = %5i"), time1); //Время Рестаб. =
+            sprintf_P(lcd_buffer, PSTR("Pecтaбилизация=%5i"), time1); //10.04.21 Время Рестаб. =
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("\340a\263\273e\275\270e \263 K\171\262e=%i.%i"), U_MPX5010 / 10, U_MPX5010 % 10); //Давление в Кубе=
+
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Дaвлeниe  = %i.%immHg"), U_MPX5010 / 10, abs(U_MPX5010 % 10)); //10.04.21 Давление в Кубе=
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("\252pa\272\345\270\307 = %1i/%1i"), (int)TekFraction + 1, (int)CountFractionRect); //Фракция =
+
+            dirtyTrickSetCursor(0, 2);
+            sprintf_P(lcd_buffer, PSTR("Фpaкция   = %1i/%1i"), (int)TekFraction + 1, (int)CountFractionRect); //Фракция =
+            my_lcdprint(lcd_buffer);
         }
     }
 }
@@ -401,104 +490,108 @@ void DisplayDistDefl()
         case 0: //Не запущено
             sprintf_P(lcd_buffer, PSTR("      %02u:%02u:%02u"), hour, minute, second);
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("                    "));
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("  C \340E\252\247E\241MATOPOM")); //С ДЕФЛЕГМАТОРОМ
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("    \340\245CT\245\247\247\261\341\245\261")); //ДИСТИЛЛЯЦИЯ
+
+            sprintf_P(lcd_buffer, PSTR("    ДИCTИЛЛЯЦИЯ")); //ДИСТИЛЛЯЦИЯ
+            my_lcdprint(lcd_buffer, 1);
+
+            sprintf_P(lcd_buffer, PSTR("  C ДEФЛEГMATOPOM")); //С ДЕФЛЕГМАТОРОМ
+            my_lcdprint(lcd_buffer, 2);
             break;
         case 1:
-            lcd.clear();
-            lcd.setCursor(0, 1);
-            sprintf_P(lcd_buffer, PSTR("       \243\340\245TE \356"));
-            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR("       ЖДИTE \356"));
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 2: //Ожидание закипания (прогреется дефлегматор)
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u PA\244\241OH"), hour, minute, second); //00:00:00 РАЗГОН
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u PAЗГOH"), hour, minute, second); //00:00:00 РАЗГОН
             my_lcdprint(lcd_buffer);
             formTRZGDistill();
             break;
         case 3: //Ожидание закипания (прогреется куб дефлегматор)
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u PA\244\241OH"), hour, minute, second); //00:00:00 РАЗГОН
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u PAЗГOH"), hour, minute, second); //00:00:00 РАЗГОН
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), UstPower); //Вых.мощность=
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.\276oc\273e \340e\344a=%i.%i"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10);
-            my_lcdprint(lcd_buffer); //Темп.после Дефa=
-            lcd.setCursor(0, 1);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.K\171\262a=%i.%i/%i.%i"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, TempDeflBegDistil / 10, TempDeflBegDistil % 10);
-            break; //Темп.Куба=
+
+            sprintf_P(lcd_buffer, PSTR("Куб   = %i.%i/%i.%i \337c"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, TempDeflBegDistil / 10, TempDeflBegDistil % 10); //10.04.21 Темп.Куба=
+            my_lcdprint(lcd_buffer, 1);
+
+            sprintf_P(lcd_buffer, PSTR("Дефлегматор = %i.%i\337С"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10); //10.04.21 Темп.после Дефa=
+            my_lcdprint(lcd_buffer, 2);
+
+            sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.мощность=
+            my_lcdprint(lcd_buffer, 3);
+            break;
         case 4: //Работа без дефлегматора
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u \340\245CT\245\247\247\261\341\245\261"), hour, minute, second); //00:00:00 ДИСТИЛЛЯЦИЯ
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u ДИCTИЛЛЯЦИЯ"), hour, minute, second); //00:00:00 ДИСТИЛЛЯЦИЯ
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), UstPower); //Вых.мощность=
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.мощность=
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.\340e\344a= %i.%i/%i.%i"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10, TempDefl / 10, TempDefl % 10);
-            my_lcdprint(lcd_buffer); //Темп.Дефа=
-            sprintf_P(lcd_buffer, PSTR("\240E\244 \340E\252\247E\241MATOPA")); //БЕЗ ДЕФЛЕГМАТОРА
+            dirtyTrickSetCursor(0, 2);
+            sprintf_P(lcd_buffer, PSTR("Дeф   = %i.%i/%i.%i \337С"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10, TempDefl / 10, TempDefl % 10); //10.04.21 Темп.Дефа=
+            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR("БEЗ ДEФЛEГMATOPA")); //БЕЗ ДЕФЛЕГМАТОРА
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 5: //Работа с 50% дефлегмацией
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u \340\245CT\245\247\247\261\341\245\261"), hour, minute, second); //00:00:00 ДИСТИЛЛЯЦИЯ
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u ДИCTИЛЛЯЦИЯ"), hour, minute, second); //00:00:00 ДИСТИЛЛЯЦИЯ
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), UstPower); //Вых.мощность=
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.мощность=
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.\340e\344a= %i.%i/%i.%i"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10, (TempDefl - DeltaDefl) / 10, (TempDefl - DeltaDefl) % 10);
-            my_lcdprint(lcd_buffer); //Темп.Дефа=
-            sprintf_P(lcd_buffer, PSTR("C \340E\252\247E\241MA\341\245E\246 50%%")); //С ДЕФЛЕГМАЦИЕЙ 50%
+            dirtyTrickSetCursor(0, 2);
+            sprintf_P(lcd_buffer, PSTR("Дeф   = %i.%i/%i.%i \337С"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10, (TempDefl - DeltaDefl) / 10, (TempDefl - DeltaDefl) % 10); //10.04.21 Темп.Дефа=
+            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR("C ДEФЛEГMAЦИEЙ 50%%")); //С ДЕФЛЕГМАЦИЕЙ 50%
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 6: //Работа с 100% дефлегмацией
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u \340\245CT\245\247\247\261\341\245\261"), hour, minute, second); //00:00:00 ДИСТИЛЛЯЦИЯ
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u ДИCTИЛЛЯЦИЯ"), hour, minute, second); //00:00:00 ДИСТИЛЛЯЦИЯ
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), UstPower); //Вых.мощность=
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //05.04.21 Вых.мощность=
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.\340e\344a=%i.%i/%i.%i"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10, (TempDefl - DeltaDefl) / 10, (TempDefl - DeltaDefl) % 10);
-            my_lcdprint(lcd_buffer); //Темп.Дефа=
-            sprintf_P(lcd_buffer, PSTR("C \340E\252\247E\241MA\341\245E\246 100%%")); //С ДЕФЛЕГМАЦИЕЙ 100%
+            dirtyTrickSetCursor(0, 2);
+            sprintf_P(lcd_buffer, PSTR("Дeф   = %i.%i/%i.%i \337С"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10, (TempDefl - DeltaDefl) / 10, (TempDefl - DeltaDefl) % 10); //10.04.21 Темп.Дефа=
+            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR("C ДEФЛEГMAЦИEЙ 100%%")); //С ДЕФЛЕГМАЦИЕЙ 100%
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 7: //Ожидание для охлаждения
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OKOH\253AH\245E"), hour, minute, second); //00:00:00 ОКОНЧАНИЕ
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OKOHЧAHИE"), hour, minute, second); //00:00:00 ОКОНЧАНИЕ
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.\276oc\273e \340e\344a=%i.%i"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10);
-            my_lcdprint(lcd_buffer); //Темп.после Дефa=
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("o\262op\171\343o\263a\275\270\307 \356 %4i"), SecondsEnd); //оборудования (шестигранник)
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Дефлегматор = %i.%i\337С"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10); //10.04.21 Темп.после Дефa=
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 1);
-            sprintf_P(lcd_buffer, PSTR("Ox\273a\266\343e\275\270e")); //Охлаждение
+            dirtyTrickSetCursor(0, 2);
+            sprintf_P(lcd_buffer, PSTR("oбopудoвaния \356 %4i"), SecondsEnd); //оборудования (шестигранник)
+            my_lcdprint(lcd_buffer);
+
+            sprintf_P(lcd_buffer, PSTR("Oxлaждeниe")); //Охлаждение
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 100: //Окончание
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u \340\245CT\245\247\247\261\341\245\261"), hour, minute, second); //00:00:00 ДИСТИЛЛЯЦИЯ
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u ДИCTИЛЛЯЦИЯ"), hour, minute, second); //00:00:00 ДИСТИЛЛЯЦИЯ
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276ep-pa K\171\262a=%i.%i"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10);
-            my_lcdprint(lcd_buffer); //Темпер-ра Куба =
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("OKOH\253EHA")); //ОКОНЧЕНА
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 1);
-            sprintf_P(lcd_buffer, PSTR("C \340E\252\247E\241MATOPOM"), hour, minute, second); //С ДЕФЛЕГМАТОРОМ
+
+            sprintf_P(lcd_buffer, PSTR("Куб       = %i.%i \337С"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10);
+            my_lcdprint(lcd_buffer, 3);
+
+            sprintf_P(lcd_buffer, PSTR("      OKOHЧEHA")); //ОКОНЧЕНА
+            my_lcdprint(lcd_buffer, 2);
+
+            sprintf_P(lcd_buffer, PSTR("  C ДEФЛEГMATOPOM"), hour, minute, second); //С ДЕФЛЕГМАТОРОМ
+            my_lcdprint(lcd_buffer, 1);
             break;
         }
     } else {
         PRINT_TEMPERATURES();
-        sprintf_P(lcd_buffer, PSTR("Pa\267-\345a Mo\346\275oc\277\270=%4iW"), deltaPower); //Раз-ца Мощности=
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("\251po\263e\275\304 \263 Tape =%4u"), U_UROVEN); //Уровень в Таре =
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("Po\267\273\270\263 Bo\343\303 =   %4u"), U_VODA); //Розлив Воды =
+        sprintf_P(lcd_buffer, PSTR("Paз-цa Moщнocти=%4iW"), deltaPower); //Раз-ца Мощности=
+        my_lcdprint(lcd_buffer, 1);
+
+        sprintf_P(lcd_buffer, PSTR("Poзлив Boды    =%4u"), U_VODA); //Розлив Воды =
+        my_lcdprint(lcd_buffer, 2);
+
+        sprintf_P(lcd_buffer, PSTR("Уpoвeнь в Tape =%4u"), U_UROVEN); //Уровень в Таре =
+        my_lcdprint(lcd_buffer, 3);
     }
 }
 /*
@@ -512,33 +605,37 @@ void DisplaySimpleGLV()
  case 0: //Не запущено
  case 1: //Нагрев до температуры 50 градусов
  sprintf_P(lcd_buffer,PSTR("%02u:%02u:%02u sGl Not"),hour,minute,second);
- my_lcdprint(lcd_buffer); 
+ my_lcdprint(lcd_buffer);
  formTRZGDistill();
  break;
  case 2: //Ожидание закипания (прогреется дефлегматор)
  sprintf_P(lcd_buffer,PSTR("%02u:%02u:%02u sGl Rzg"),hour,minute,second);
- my_lcdprint(lcd_buffer); 
+ my_lcdprint(lcd_buffer);
  formTRZGDistill();
  break;
  case 3: //Ожидание закипания (прогреется куб дефлегматор)
  sprintf_P(lcd_buffer,PSTR("%02u:%02u:%02u sGl Rzg"),hour,minute,second);
- my_lcdprint(lcd_buffer); 
+ my_lcdprint(lcd_buffer);
  sprintf_P(lcd_buffer,PSTR("tK=%3i/%3i %4iW"),DS_TEMP(TEMP_KUB),TempDeflBegDistil,Power);
+ my_lcdprint(lcd_buffer, 1);
  break;
  case 4: //Отбор голов
  sprintf_P(lcd_buffer,PSTR("%02u:%02u:%02u sGl Otb"),hour,minute,second);
- my_lcdprint(lcd_buffer); 
+ my_lcdprint(lcd_buffer);
  sprintf_P(lcd_buffer,PSTR("tK=%3i/%3i %4iW"),DS_TEMP(TEMP_KUB),Temp3P,PowerGlvDistil);
+ my_lcdprint(lcd_buffer, 1);
  break;
  case 5: //Ожидание 60 секунд для охлаждения
  sprintf_P(lcd_buffer,PSTR("%02u:%02u:%02u sOtbGlv"),hour,minute,second);
- my_lcdprint(lcd_buffer); 
+ my_lcdprint(lcd_buffer);
  sprintf_P(lcd_buffer,PSTR("tK=%3i Wait=%4i"),DS_TEMP(TEMP_KUB),SecondsEnd);
+ my_lcdprint(lcd_buffer, 1);
  break;
  case 100: //Окончание
  sprintf_P(lcd_buffer,PSTR("%02u:%02u:%02u sOtbGlv"),hour,minute,second);
- my_lcdprint(lcd_buffer); 
+ my_lcdprint(lcd_buffer);
  sprintf_P(lcd_buffer,PSTR("tK=%3i end"),DS_TEMP(TEMP_KUB));
+ my_lcdprint(lcd_buffer, 1);
  break;
  case 101: //Температура в ТСА превысила предельную
  formTSAErr();
@@ -549,6 +646,7 @@ void DisplaySimpleGLV()
  {
  PRINT_TEMPERATURES();
  sprintf_P(lcd_buffer,PSTR("V=%4u,%4u,%4u"),U_VODA,U_UROVEN,U_GLV);
+ 	my_lcdprint(lcd_buffer, 1);
  }
  }*/
 
@@ -568,70 +666,75 @@ void DisplaySimpleDistill()
             V2 = Temp3P;
         }
 
-        //		if (IspReg != 105)  sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u %1u\246-OT\240OP"), hour, minute, second, V1);     //00:00:00 Й-ОТБОР
-        //		else  sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OT\240OP \241O\247OB"), hour, minute, second);                   //00:00:00 ОТБОР ГОЛОВ
+        //		if (IspReg != 105)  sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u %1uЙ-OTБOP"), hour, minute, second, V1);     //00:00:00 Й-ОТБОР
+        //		else  sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OTБOP ГOЛOB"), hour, minute, second);                   //00:00:00 ОТБОР ГОЛОВ
 
         switch (StateMachine) {
         case 0: //Не запущено
             sprintf_P(lcd_buffer, PSTR("      %02u:%02u:%02u"), hour, minute, second);
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("                    "));
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
+            my_lcdprint(lcd_buffer, 0);
+
+            sprintf_P(lcd_buffer, PSTR("    ДИCTИЛЛЯЦИЯ")); //ДИСТИЛЛЯЦИЯ
+            my_lcdprint(lcd_buffer, 1);
+
             if (IspReg != 105) {
-                sprintf_P(lcd_buffer, PSTR("     %1u-\246 OT\240OP "), V1); //№-Й ОТБОР
-                my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("    \340\245CT\245\247\247\261\341\245\261")); //ДИСТИЛЛЯЦИЯ
+                sprintf_P(lcd_buffer, PSTR("     %1u-Й OTБOP "), V1); //№-Й ОТБОР
+                my_lcdprint(lcd_buffer, 2);
             } else {
-                sprintf_P(lcd_buffer, PSTR("    OT\240OP \241O\247OB")); //ОТБОР ГОЛОВ
-                my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("    \340\245CT\245\247\247\261\341\245\261")); //ДИСТИЛЛЯЦИЯ
+                sprintf_P(lcd_buffer, PSTR("    OTБOP ГOЛOB")); //ОТБОР ГОЛОВ
+                my_lcdprint(lcd_buffer, 2);
             }
             break;
         case 1:
-            lcd.clear();
-            lcd.setCursor(0, 1);
-            sprintf_P(lcd_buffer, PSTR("       \243\340\245TE \356"));
-            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR("       ЖДИTE \356"));
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 2: //Ожидание закипания (прогреется дефлегматор)
             if (IspReg != 105)
-                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u %1u-O PA\244\241OH"), hour, minute, second, V1); //00:00:00 1-О РАЗГОН
+                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u %1u-O PAЗГOH"), hour, minute, second, V1); //00:00:00 1-О РАЗГОН
             else
-                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OT\240OP \241O\247OB"), hour, minute, second); //00:00:00 ОТБОР ГОЛОВ
+                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OTБOP ГOЛOB"), hour, minute, second); //00:00:00 ОТБОР ГОЛОВ
             my_lcdprint(lcd_buffer);
             formTRZGDistill();
             break;
         case 3: //Дистилляция
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u \340\245CT\245\247\247\261\341\245\261"), hour, minute, second); //00:00:00 ДИСТИЛЛЯЦИЯ
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.\276oc\273e \340e\344a=%i.%i"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10);
-            my_lcdprint(lcd_buffer); //Темп.после Дефa=
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), UstPower); //Вых.мощность =
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.K\171\262a= %i.%i/%i.%i"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, V2 / 10, V2 % 10);
-            break; //Темп.Куба=
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u ДИCTИЛЛЯЦИЯ"), hour, minute, second); //00:00:00 ДИСТИЛЛЯЦИЯ
+            my_lcdprint(lcd_buffer, 0);
+
+            sprintf_P(lcd_buffer, PSTR("Куб   = %i.%i/%i.%i \337С"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, V2 / 10, V2 % 10); //10.04.21 Темп.Куба=
+            my_lcdprint(lcd_buffer, 1);
+
+            sprintf_P(lcd_buffer, PSTR("Дефлегматор = %i.%i\337С"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10); //10.04.21 Темп.после Дефa=
+            my_lcdprint(lcd_buffer, 2);
+
+            sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.мощность =
+            my_lcdprint(lcd_buffer, 3);
+
+            break;
         case 4: //Ожидание 60 секунд для охлаждения
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OX\247A\243\340EH\245E"), hour, minute, second); //00:00:00 ОХЛАЖДЕНИE
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.\276oc\273e \340e\344a=%i.%i"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10);
-            my_lcdprint(lcd_buffer); //Темп.после Дефa=
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("\243\343\270\277e: %4i"), SecondsEnd); //Ждите:
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("O\240OP\251\340OBAH\245\261...")); //ОБОРУДОВАНИЯ...
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OXЛAЖДEHИE"), hour, minute, second); //00:00:00 ОХЛАЖДЕНИE
+            my_lcdprint(lcd_buffer, 0);
+
+            sprintf_P(lcd_buffer, PSTR("OБOPУДOBAHИЯ...")); //ОБОРУДОВАНИЯ...
+            my_lcdprint(lcd_buffer, 1);
+
+            sprintf_P(lcd_buffer, PSTR("Дефлегматор = %i.%i\337С"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10); //10.04.21 Темп.после Дефa=
+            my_lcdprint(lcd_buffer, 2);
+
+            sprintf_P(lcd_buffer, PSTR("Ждитe: %4i"), SecondsEnd); //Ждите:
+            my_lcdprint(lcd_buffer, 3);
+
             break;
         case 100: //Окончание
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u \340\245CT\245\247\247\261\341\245\261"), hour, minute, second); //00:00:00 ДИСТИЛЛЯЦИЯ
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276ep-pa K\171\262a= %i.%i"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10); //Темпер-ра Куба=
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("                    "));
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("OKOH\253EHA")); //ОКОНЧЕНА
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u ДИCTИЛЛЯЦИЯ"), hour, minute, second); //00:00:00 ДИСТИЛЛЯЦИЯ
+            my_lcdprint(lcd_buffer, 0);
+
+            sprintf_P(lcd_buffer, PSTR("      OKOHЧEHA")); //ОКОНЧЕНА
+            my_lcdprint(lcd_buffer, 1);
+
+            sprintf_P(lcd_buffer, PSTR("Куб       = %i.%i \337С"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10); //10.04.21 Темпер-ра Куба=
+            my_lcdprint(lcd_buffer, 2);
+
             break;
         case 101: //Температура в ТСА превысила предельную
             formTSAErr();
@@ -639,87 +742,99 @@ void DisplaySimpleDistill()
         }
     } else {
         PRINT_TEMPERATURES();
-        sprintf_P(lcd_buffer, PSTR("\340a\263\273e\275\270e(MPX)=%i.%imm"), U_MPX5010 / 10, U_MPX5010 % 10); //Давление(MPX)=
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), UstPower); //Вых.мощность=
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("\251po\263e\275\304 \263 Tape =%4u"), U_UROVEN); //Уровень в Таре =
+
+        sprintf_P(lcd_buffer, PSTR("Уpoвeнь в Tape =%4u"), U_UROVEN); //Уровень в Таре =
+        my_lcdprint(lcd_buffer, 1);
+
+        sprintf_P(lcd_buffer, PSTR("Дaвлeниe  = %i.%immHg"), U_MPX5010 / 10, abs(U_MPX5010 % 10)); //9.04.21 Давление(MPX)=
+        my_lcdprint(lcd_buffer, 2);
+
+        sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.мощность=
+        my_lcdprint(lcd_buffer, 3);
     }
 }
 
 void DisplayFracionDistill()
 {
     if (DispPage == 0) {
-        sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u \340\245CT.\252P.%1i/%1i"), hour, minute, second, (int)(TekFraction < CountFractionDist) ? TekFraction + 1 : CountFractionDist, (int)CountFractionDist);
-        //00:00:00 ДИСТ.ФР.1/2
         switch (StateMachine) {
         case 0: //Не запущено
             sprintf_P(lcd_buffer, PSTR("      %02u:%02u:%02u"), hour, minute, second);
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("                    "));
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("  C \252PAK\341\245OHH\245KOM")); //С ФРАКЦИОННИКОМ
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("    \340\245CT\245\247\247\261\341\245\261")); //ДИСТИЛЛЯЦИЯ
+            my_lcdprint(lcd_buffer, 0);
+
+            sprintf_P(lcd_buffer, PSTR("    ДИCTИЛЛЯЦИЯ")); //ДИСТИЛЛЯЦИЯ
+            my_lcdprint(lcd_buffer, 1);
+
+            sprintf_P(lcd_buffer, PSTR("  C ФPAKЦИOHHИKOM")); //С ФРАКЦИОННИКОМ
+            my_lcdprint(lcd_buffer, 2);
             break;
         case 1:
-            lcd.clear();
-            lcd.setCursor(0, 1);
-            sprintf_P(lcd_buffer, PSTR("       \243\340\245TE \356"));
-            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR("       ЖДИTE \356"));
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 2: //Ожидание закипания (прогреется дефлегматор)
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u \340\245CT.\252P.PA\244"), hour, minute, second); //00:00:00 ДИСТ.ФР.РАЗ
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u PAЗГОН"), hour, minute, second); //10.04.21 00:00:00 ДИСТ.ФР.РАЗ
             my_lcdprint(lcd_buffer);
             formTRZGDistill();
             break;
         case 3: //Дистилляция
-            my_lcdprint(lcd_buffer);
-            if (TekFraction < CountFractionDist)
+            //00:00:00 ДИСТ.ФР.1/2
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u ФРАКЦИЯ %1i/%1i"), hour, minute, second, (int)(TekFraction < CountFractionDist) ? TekFraction + 1 : CountFractionDist, (int)CountFractionDist);
+            my_lcdprint(lcd_buffer, 0);
+
+            if (TekFraction < CountFractionDist) {
                 V2 = TempFractionDist[TekFraction];
+            }
             if (V2 >= 0) {
-                sprintf_P(lcd_buffer, PSTR("Te\274\276.\340e\344\273e\264\274. = %i.%i"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10);
-                my_lcdprint(lcd_buffer); //Темп.Дефлегм.=
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), UstPower); //Вых.мощность =
-                my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("Te\274\276.K\171\262a= %i.%i/%i.%i"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, V2 / 10, V2 % 10);
-            } //Темп.Куба=
-            else {
-                sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 =%4iW"), UstPower); //Вых.мощность =
-                my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("Oc\277a\273oc\304: %5i \274\270\275."), (int)SecOstatok); //Осталось: % мин.
-                my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("Te\274\276ep-pa K\171\262a=%i.%i)"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10);
-            } //Темпep-pa Куба=
+                sprintf_P(lcd_buffer, PSTR("Куб   = %i.%i/%i.%i \337С"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, V2 / 10, V2 % 10); //10.04.21 Темп.Куба=
+                my_lcdprint(lcd_buffer, 1);
+
+                sprintf_P(lcd_buffer, PSTR("Дeфлeгматор = %i.%i\337С"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10); //10.04.21 Темп.Дефлегм.=
+                my_lcdprint(lcd_buffer, 2);
+
+                sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.мощность =
+                my_lcdprint(lcd_buffer, 3);
+            } else { // if (V2 >= 0)
+                sprintf_P(lcd_buffer, PSTR("Куб       = %i.%i \337С"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10); //10.04.21 Темпep-pa Куба=
+                my_lcdprint(lcd_buffer, 1);
+
+                sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //05.04.21 Вых.мощность =
+                my_lcdprint(lcd_buffer, 2);
+
+                sprintf_P(lcd_buffer, PSTR("Ocтaлocь: %5i мин."), (int)SecOstatok); //Осталось: % мин.
+                my_lcdprint(lcd_buffer, 3);
+            } //if (V2 >= 0)
             break;
         case 4: //Ожидание 60 секунд для охлаждения
-            sprintf_P(lcd_buffer, PSTR("Te\274\276ep-pa K\171\262a=%i.%i)"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10);
-            my_lcdprint(lcd_buffer); //Темпep-pa Куба=
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("OCTA\247OC\304 -%4i ce\272."), time3); //ОСТАЛОСЬ -
+            sprintf_P(lcd_buffer, PSTR("Куб       = %i.%i \337С"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10); //10.04.21 Темпep-pa Куба=
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("OX\247A\243\340.O\240OP\251\340OBAH\245\261")); //ОХЛАЖД.ОБОРУДОВАНИЯ
+
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("OCTAЛOCь:  %4i ceк"), time3); //ОСТАЛОСЬ -
             my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.\340e\344\273e\264\274.=%i.%i"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10);
-            break; //Темп.Дефлегм.=
+
+            dirtyTrickSetCursor(0, 2);
+            sprintf_P(lcd_buffer, PSTR("OXЛAЖДЕНИЕ OБOPУД-Я")); //24.04.21 ОХЛАЖД.ОБОРУДОВАНИЯ
+            my_lcdprint(lcd_buffer);
+
+            sprintf_P(lcd_buffer, PSTR("Дeфлeгматор =%i.%i\337С"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10); //10.04.21 Темп.Дефлегм.=
+            my_lcdprint(lcd_buffer, 1);
+            break;
         case 100: //Окончание
             if (StateMachine == 100) {
-                sprintf_P(lcd_buffer, PSTR("       \250PO\341ECC")); //ПРОЦЕСС
+                sprintf_P(lcd_buffer, PSTR("       ПPOЦECC")); //ПРОЦЕСС
                 my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("      \244AKOH\253EH")); //ЗАКОНЧЕН
+
+                dirtyTrickSetCursor(0, 3);
+                sprintf_P(lcd_buffer, PSTR("      ЗAKOHЧEH")); //ЗАКОНЧЕН
                 my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 2);
-                sprintf_P(lcd_buffer, PSTR("     \340\245CT\245\247\247\261\341\245\245")); //ДИСТИЛЛЯЦИИ
+
+                dirtyTrickSetCursor(0, 2);
+                sprintf_P(lcd_buffer, PSTR("     ДИCTИЛЛЯЦИИ")); //ДИСТИЛЛЯЦИИ
                 my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("     \252PAK\341\245OHHO\246")); //ФРАКЦИОННОЙ
+
+                sprintf_P(lcd_buffer, PSTR("     ФPAKЦИOHHOЙ")); //ФРАКЦИОННОЙ
+                my_lcdprint(lcd_buffer, 1);
             }
             break;
         case 101: //Температура в ТСА превысила предельную
@@ -728,13 +843,15 @@ void DisplayFracionDistill()
         }
     } else {
         PRINT_TEMPERATURES();
-        sprintf_P(lcd_buffer, PSTR("\251po\263e\275\304 \263 Tape =%4u"), U_UROVEN); //Уровень в Таре =
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 =%4uW"), UstPower); //Вых.мощность =
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("Po\267\273\270\263 Bo\343\303 =%4u"), U_VODA); //Розлив Воды =
+
+        sprintf_P(lcd_buffer, PSTR("Poзлив Boды    =%4u"), U_VODA); //Розлив Воды =
+        my_lcdprint(lcd_buffer, 1);
+
+        sprintf_P(lcd_buffer, PSTR("Уpoвeнь в Tape =%4u"), U_UROVEN); //Уровень в Таре =
+        my_lcdprint(lcd_buffer, 2);
+
+        sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4uW"), UstPower); //5.04.21 Вых.мощность =
+        my_lcdprint(lcd_buffer, 3);
     }
 }
 
@@ -742,159 +859,174 @@ void DisplayRazvar()
 {
     if (DispPage == 0) {
         if (IspReg == 114)
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OX\247.\244ATOPA"), hour, minute, second); //02u:%02u:%02 ОХЛ.ЗАТОРА
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u OXЛ. ЗATOPA"), hour, minute, second); //02u:%02u:%02 ОХЛ.ЗАТОРА
         else
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u PA\244BAP \244EPH"), hour, minute, second); //02u:%02u:%02 РАЗВАР ЗЕРН
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u ЗEPHО/МУКА"), hour, minute, second); //24.04.21 02u:%02u:%02 РАЗВАР ЗЕРН
+
         my_lcdprint(lcd_buffer);
 
         switch (StateMachine) {
         case 0:
-            sprintf_P(lcd_buffer, PSTR("Te\274\276ep-pa \263o\343\303=%i.%i"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10);
-            my_lcdprint(lcd_buffer); //Темпер-ра воды=
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 =%4iW"), UstPower); //Вых.мощность =
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("O\266\270\343a\275\270e \263\272\273\306\300e\275\270\307 \356")); //Ожидание включения
+            sprintf_P(lcd_buffer, PSTR("Teмпepатуpa = %i.%i\337C"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10); //1.04.21 Темпер-ра воды=
+            my_lcdprint(lcd_buffer, 2);
+
+            sprintf_P(lcd_buffer, PSTR("Заданная Р  =  %4iW"), UstPower); //5.04.21 Вых.мощность =
+            my_lcdprint(lcd_buffer, 3);
+
+            sprintf_P(lcd_buffer, PSTR("Oжидaниe включeния \356")); //Ожидание включения
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 1: //Нагрев до температуры 50 градусов
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.\263o\343\303= %i.%i/%i.0"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10, (int)TempZSP);
-            my_lcdprint(lcd_buffer); //Темп.воды=
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), UstPower); //Вых.мощность =
+            sprintf_P(lcd_buffer, PSTR("Вoда = %i.%i/%i.0 \337С"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10, (int)TempZSP); //10.04.21 Темп.воды=
+            my_lcdprint(lcd_buffer, 2);
+
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.мощность =
             my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Ha\264pe\263 \263o\343\303...")); //Нагрев воды...
+
+            sprintf_P(lcd_buffer, PSTR("Haгpeв вoды ...")); //Нагрев воды...
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 2: //Поддержание температуры 50 градусов, пока не произойдет ручной переход к следующему этапу.
-            sprintf_P(lcd_buffer, PSTR("\244ac\303\276\304 \267ep\275o \270 \275a\266\274\270")); //Засыпь зерно и нажми
+            sprintf_P(lcd_buffer, PSTR("Зacыпь зepнo и нaжми")); //Засыпь зерно и нажми
+            my_lcdprint(lcd_buffer, 2);
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("кнoпку <BHИЗ>")); //кнопку <ВНИЗ>
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("\272\275o\276\272\171 <BH\245\244>")); //кнопку <ВНИЗ>
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276-pa \263o\343\303 = %i.%i"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10); //Темп-ра воды =
+            sprintf_P(lcd_buffer, PSTR("Вoда       = %i.%i \337С"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10); //24.04.21 Темп-ра воды =
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 3: //Нагрев до температуры 64 градуса
-            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 =%4iW"), UstPower); //Вых.мощность =
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.мощность =
+            my_lcdprint(lcd_buffer, 2);
+            dirtyTrickSetCursor(0, 3);
             sprintf_P(lcd_buffer, PSTR("                    "));
             my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274.\267a\277opa=%i.%i/%i.0"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10, (int)TempZSPSld);
-            break; //Тем.затора=
+            sprintf_P(lcd_buffer, PSTR("Зaтop = %i.%i/%i.0 \337С"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10, (int)TempZSPSld); //24.04.21 Тем.затора=
+            my_lcdprint(lcd_buffer, 1);
+            break;
         case 4: //Ожидание 15 минут, поддержка температуры
-            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 =%4iW"), UstPower); //Вых.мощность =
+            sprintf_P(lcd_buffer, PSTR("Заданная Р =   %4iW"), UstPower); //5.04.21 Вых.мощность =
+            my_lcdprint(lcd_buffer, 2);
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Пауза ферм.= %i.%iмин"), time2 / 60, (time2 / 6) % 10); //24.04.21 Осталось -
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("Oc\277a\273oc\304 - %4i"), time2); //Осталось -
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.\267a\277opa = %i.%i"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10); //Темп.затора =
+            sprintf_P(lcd_buffer, PSTR("Зaтop      = %i.%i \337С"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10); //24.04.21 Темп.затора =
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 5: //Нагрев до кипения
             if (ds1820_devices < 2) {
-                sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 =%4iW"), UstPower); //Вых.мощность =
+                sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.мощность =
+                my_lcdprint(lcd_buffer, 2);
+                dirtyTrickSetCursor(0, 3);
+                sprintf_P(lcd_buffer, PSTR("зaтopa = %i.%i/%i.%i\337C"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10, TempKipenZator / 10, TempKipenZator % 10); //затора =
                 my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("\267a\277opa = %i.%i/%i.%i"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10, TempKipenZator / 10, TempKipenZator % 10);
-                my_lcdprint(lcd_buffer); //затора =
-                sprintf_P(lcd_buffer, PSTR("Te\274\276epa\277\171pa"));
-            } //Температура
-            else {
-                sprintf_P(lcd_buffer, PSTR("\267a\277opa = %i.%i/%i.%i"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10, TempKipenZator / 10, TempKipenZator % 10);
-                my_lcdprint(lcd_buffer); //затора =
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 =%4iW"), UstPower); //Вых.мощность =
+                sprintf_P(lcd_buffer, PSTR("Teмпepaтуpa")); //Температура
+                my_lcdprint(lcd_buffer, 1);
+            } else {
+                sprintf_P(lcd_buffer, PSTR("зaтopa = %i.%i/%i.%i\337C"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10, TempKipenZator / 10, TempKipenZator % 10);
+                my_lcdprint(lcd_buffer, 2); //затора =
+                dirtyTrickSetCursor(0, 3);
+                sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.мощность =
                 my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("Te\274\276epa\277\171pa \272\270\276e\275\270\307")); //Температура кипения
+                sprintf_P(lcd_buffer, PSTR("Teмпepaтуpa кипeния")); //Температура кипения
+                my_lcdprint(lcd_buffer, 1);
             }
             break;
         case 6: //Варка
-            sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 =%4iW"), PowerRazvZerno); //Вых.мощность =
+            sprintf_P(lcd_buffer, PSTR("Заданная Р =   %4iW"), PowerRazvZerno); // Вых.мощность =
+            my_lcdprint(lcd_buffer, 2);
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Варим     - %i.%i мин"), time2 / 60, (time2 / 6) % 10); //24.04.21 Осталось -
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("Oc\277a\273oc\304: %4i"), time2); //Осталось:
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.\267a\277opa = %i.%i"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10); //Темп.затора =
+            sprintf_P(lcd_buffer, PSTR("Зaтop      = %i.%i \337С"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10); //Темп.затора =
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 7: //Охлаждение до температыры осахаривания
-            sprintf_P(lcd_buffer, PSTR("Ox\273a\266\343e\275\270e \343o \277e\274\276.")); //Охлаждение до темп.
+            sprintf_P(lcd_buffer, PSTR("Oxлaждeниe дo тeмп.")); //Охлаждение до темп.
+            my_lcdprint(lcd_buffer, 2);
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("ocaxapивaния \356")); //осахаривания
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("ocaxap\270\263a\275\270\307 \356")); //осахаривания
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274.\267a\277opa=%i.%i/%i.0"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10, (int)TempZSPSld);
-            break; //Тем.затора=
+            sprintf_P(lcd_buffer, PSTR("Зaтop = %i.%i/%i.0 \337С"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10, (int)TempZSPSld); //10.04.21 Тем.затора=
+            my_lcdprint(lcd_buffer, 1);
+            break;
         case 8: //Поддержание температуры 50 градусов, пока не произойдет ручной переход к следующему этапу.
-            sprintf_P(lcd_buffer, PSTR("\244ac\303\276\304 co\273o\343 \270 \275a\266\274\270")); //Засыпь солод и нажми
+            sprintf_P(lcd_buffer, PSTR("Зacыпь coлoд и нaжми")); //Засыпь солод и нажми
+            my_lcdprint(lcd_buffer, 2);
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("кнoпку <BHИЗ>")); //кнопку <ВНИЗ>
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("\272\275o\276\272\171 <BH\245\244>")); //кнопку <ВНИЗ>
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276-pa \263o\343\303 = %i.%i"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10); //Темп-ра воды =
+            sprintf_P(lcd_buffer, PSTR("Вoда       = %i.%i \337С"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10); //Темп-ра воды =
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 9: //Мешаем 10 минут
-            sprintf_P(lcd_buffer, PSTR("Pa\262o\277a \274e\301a\273\272\270 - %4i"), time2); //Работа мешалки =
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("                    "));
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.\267a\277opa = %i.%i"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10); //Темп.затора =
+            sprintf_P(lcd_buffer, PSTR("Pазмeшиваем- %i.%iмин"), time2 / 60, (time2 / 6) % 10); //24.04.21 Работа мешалки =
+            my_lcdprint(lcd_buffer, 2);
+
+            sprintf_P(lcd_buffer, PSTR("Зaтop      = %i.%i \337С"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10); //Темп.затора =
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 10: //Осахаривание
-            sprintf_P(lcd_buffer, PSTR("\250po\345ecc ocaxap\270\263a\275\270\307")); //Процесс осахаривания
+            sprintf_P(lcd_buffer, PSTR("Пpoцecc ocaxapивaния")); //Процесс осахаривания
+            my_lcdprint(lcd_buffer, 2);
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Ocтaлocь  - %i.%i мин"), time2 / 60, (time2 / 6) % 10); //24.04.21 Осталось -
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("oc\277a\273oc\304 - %4i"), time2); //осталось -
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.\267a\277opa = %i.%i"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10); //Темп.затора =
+            sprintf_P(lcd_buffer, PSTR("Зaтop      = %i.%i \337С"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10); //24.04.21 Темп.затора =
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 11: //Охлаждение до температуры первичного внесения дрожжей осахаривания
-            sprintf_P(lcd_buffer, PSTR("Te\274\276epa\277\171pa")); //Температура
+            sprintf_P(lcd_buffer, PSTR("1го внесения дрожжей")); //24.04.21 Температура
+            my_lcdprint(lcd_buffer, 2);
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Зaтop = %i.%i/40.0 \337С"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10); //24.04.21 затора =
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("\267a\277opa = %i.%i/40,0"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10); //затора =
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Ox\273.\343o \263\275ec.\343po\266\266e\271")); //Охл.до внес.дрожжей
+            sprintf_P(lcd_buffer, PSTR("Oxлaждeниe дo тeмп.")); //24.04.21 Охл.до внес.дрожжей
+            my_lcdprint(lcd_buffer, 1);
             break;
-        case 12: //Охлаждение до температыры осахаривания
-            sprintf_P(lcd_buffer, PSTR("Ox\273a\266\343e\275\270e \343o \277e\274\276.")); //Охлаждение до темп.
+        case 12: //Охлаждение до температуры осахаривания
+            sprintf_P(lcd_buffer, PSTR("Oxлaждeниe дo тeмп.")); //Охлаждение до темп.
+            my_lcdprint(lcd_buffer, 2);
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("ocaxapивaния \356")); //осахаривания
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("ocaxap\270\263a\275\270\307 \356")); //осахаривания
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274.\267a\277opa=%i.%i/%i.0"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10, (int)TempHLDZatorBrog1);
-            break; //Тем.затора =
+            sprintf_P(lcd_buffer, PSTR("Зaтop = %i.%i/%i.0 \337С"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10, (int)TempHLDZatorBrog1); //10.04.21 Тем.затора =
+            my_lcdprint(lcd_buffer, 1);
+            break;
         case 13: //Поддержка брожения, ничего не делаем, только мешаем периодически
-            sprintf_P(lcd_buffer, PSTR("\245\343\265\277 \262po\266e\275\270e \356")); //Идет брожение (знак многогранника)
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("                    "));
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274.\267a\277opa=%i.%i/%i.0"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10, (int)TempHLDZatorBrog1);
-            break; //Тем.затора =
+            sprintf_P(lcd_buffer, PSTR("Ид\265т бpoжeниe \356")); //Идет брожение (знак многогранника)
+            my_lcdprint(lcd_buffer, 2);
+
+            sprintf_P(lcd_buffer, PSTR("Зaтop =%i.%i/%i.0 \337С"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10, (int)TempHLDZatorBrog1); //10.04.21 Тем.затора =
+            my_lcdprint(lcd_buffer, 1);
+            break;
         case 14: //Поддержка брожения - охлаждение
-            sprintf_P(lcd_buffer, PSTR("\250o\343\343ep\266a\275\270e \262po\266e\275\270\307")); //Поддержание брожения
+            sprintf_P(lcd_buffer, PSTR("Пoддepжaниe бpoжeния")); //Поддержание брожения
+            my_lcdprint(lcd_buffer, 2);
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("- oxлaждeниe \356")); //- охлаждение (знак многогранника)
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("- ox\273a\266\343e\275\270e \356")); //- охлаждение (знак многогранника)
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274.\267a\277opa=%i.%i/%i.5"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10, (int)TempHLDZatorBrog1);
-            break; //Тем.затора =
+            sprintf_P(lcd_buffer, PSTR("Зaтop = %i.%i/%i.5 \337С"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10, (int)TempHLDZatorBrog1); //10.04.21 Тем.затора =
+            my_lcdprint(lcd_buffer, 1);
+            break;
         case 100: //Окончание
-            sprintf_P(lcd_buffer, PSTR("                    "));
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("               KOHEЦ")); //КОНЕЦ
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("               KOHE\341")); //КОНЕЦ
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.\267a\277opa = %i.%i"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10); //Темп.затора =
+            sprintf_P(lcd_buffer, PSTR("Зaтop      = %i.%i \337С"), DS_TEMP(TEMP_RAZVAR) / 10, DS_TEMP(TEMP_RAZVAR) % 10); //Темп.затора =
+            my_lcdprint(lcd_buffer, 1);
             break;
         }
     } else {
         PRINT_TEMPERATURES();
-        sprintf_P(lcd_buffer, PSTR("Te\274\276epa\277\171pa \267ac\303\276\270")); //Температура засыпи
+        sprintf_P(lcd_buffer, PSTR("Teмпepaтуpa зacыпи")); //Температура засыпи
+        my_lcdprint(lcd_buffer, 2);
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("coлoдa     = %i.0 \337С"), (int)TempZSPSld); //25.04.21 солода =
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("co\273o\343a = %i.0"), (int)TempZSPSld); //солода =
-        my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\251po\263e\275\304 H\250\241 =%4u"), U_NPG); //Уровень НПГ =
+        sprintf_P(lcd_buffer, PSTR("Уpoвeнь HПГ = %4u"), U_NPG); //Уровень НПГ =
+        my_lcdprint(lcd_buffer, 1);
     }
 }
 /*
@@ -908,26 +1040,29 @@ void DisplayNDRF()
  case 1: //Не запущено
  sprintf_P(lcd_buffer,PSTR("%02u:%02u:%02u NDRF"),hour,minute,second);
  //sprintf_P(lcd_buffer,PSTR("%u%u%u%u  %u%u%u%u"),PINB.4,PINB.3,PINB.2,PINA.7, PINA.6,PINA.5,PINA.4,PINA.3);
- my_lcdprint(lcd_buffer); 
+ my_lcdprint(lcd_buffer);
  sprintf_P(lcd_buffer,PSTR("tK=%3i P=%4i"),DS_TEMP(TEMP_KUB),Power);
+ my_lcdprint(lcd_buffer, 1);
  break;
  case 2: //Разгон
  sprintf_P(lcd_buffer,PSTR("%02u:%02u:%02u ND RZG"),hour,minute,second);
  //sprintf_P(lcd_buffer,PSTR("%u%u%u%u  %u%u%u%u"),PINB.4,PINB.3,PINB.2,PINA.7, PINA.6,PINA.5,PINA.4,PINA.3);
- my_lcdprint(lcd_buffer); 
+ my_lcdprint(lcd_buffer);
  if (tEndRectRazgon>0) sprintf_P(lcd_buffer,PSTR("tK=%3i/%3i %4iW"),DS_TEMP(TEMP_KUB),tEndRectRazgon,UstPower);
  else sprintf_P(lcd_buffer,PSTR("tN=%3i/%3i %4iW"),DS_TEMP(TEMP_RK20),-tEndRectRazgon,UstPower);
+ my_lcdprint(lcd_buffer, 1);
  break;
  case 3: //Стабилицация колонны
  sprintf_P(lcd_buffer,PSTR("%02u:%02u:%02u ND NSB"),hour,minute,second);
  //sprintf_P(lcd_buffer,PSTR("%u%u%u%u  %u%u%u%u"),PINB.4,PINB.3,PINB.2,PINA.7, PINA.6,PINA.5,PINA.4,PINA.3);
- my_lcdprint(lcd_buffer); 
+ my_lcdprint(lcd_buffer);
  sprintf_P(lcd_buffer,PSTR("t=%3i(%4i)%4iW"),DS_TEMP(TEMP_RK20),(int)(SecOstatok),PowerRect);
+ my_lcdprint(lcd_buffer, 1);
  break;
  case 4: //Отбор голов
  sprintf_P(lcd_buffer,PSTR("%02u:%02u:%02u ND GLV"),hour,minute,second);
  //sprintf_P(lcd_buffer,PSTR("%u%u%u%u  %u%u%u%u"),PINB.4,PINB.3,PINB.2,PINA.7, PINA.6,PINA.5,PINA.4,PINA.3);
- my_lcdprint(lcd_buffer); 
+ my_lcdprint(lcd_buffer);
  if (UrovenProvodimostSR==0)
  sprintf_P(lcd_buffer,PSTR("tK=%3i/%3i %4iW"),DS_TEMP(TEMP_KUB),tEndRectOtbGlv,PowerRect);
  else
@@ -935,43 +1070,50 @@ void DisplayNDRF()
  sprintf_P(lcd_buffer,PSTR("Pr=%3i/%3i %4iW"),U_GLV,UrovenProvodimostSR,PowerRect);
  else
  sprintf_P(lcd_buffer,PSTR("Tm=%3i/%3i %4iW"),(int) SecOstatok,-UrovenProvodimostSR,PowerRect);
+ my_lcdprint(lcd_buffer, 1);
  break;
  case 5: //Стоп, ожидание возврата температуры
  sprintf_P(lcd_buffer,PSTR("%02u:%02u:%02u ND Stop"),hour,minute,second);
  //sprintf_P(lcd_buffer,PSTR("%u%u%u%u  %u%u%u%u"),PINB.4,PINB.3,PINB.2,PINA.7, PINA.6,PINA.5,PINA.4,PINA.3);
- my_lcdprint(lcd_buffer); 
+ my_lcdprint(lcd_buffer);
  sprintf_P(lcd_buffer,PSTR("tN=%3i/%3i %2i%%"),DS_TEMP(TEMP_RK20),tStabSR,ProcChimSR);
+ my_lcdprint(lcd_buffer, 1);
  break;
  case 6: //Ректификация
  sprintf_P(lcd_buffer,PSTR("%02u:%02u:%02u NDst %2i%%"),hour,minute,second,
 );
  //sprintf_P(lcd_buffer,PSTR("%u%u%u%u  %u%u%u%u"),PINB.4,PINB.3,PINB.2,PINA.7, PINA.6,PINA.5,PINA.4,PINA.3);
- my_lcdprint(lcd_buffer); 
+ my_lcdprint(lcd_buffer);
  sprintf_P(lcd_buffer,PSTR("tN=%3i/%3i/d%2i"),DS_TEMP(TEMP_RK20),tStabSR+tDeltaRect,tDeltaRect);
+ my_lcdprint(lcd_buffer, 1);
  break;
  case 7: //Отбор хвостов
  sprintf_P(lcd_buffer,PSTR("%02u:%02u:%02u ND Hvst"),hour,minute,second);
  //sprintf_P(lcd_buffer,PSTR("%u%u%u%u  %u%u%u%u"),PINB.4,PINB.3,PINB.2,PINA.7, PINA.6,PINA.5,PINA.4,PINA.3);
- my_lcdprint(lcd_buffer); 
+ my_lcdprint(lcd_buffer);
  sprintf_P(lcd_buffer,PSTR("tK=%3i/%3i"),DS_TEMP(TEMP_KUB),tEndRect);
+ my_lcdprint(lcd_buffer, 1);
  break;
  case 8: //Отбор ожидание 3 минут
  sprintf_P(lcd_buffer,PSTR("%02u:%02u:%02u ND Wait"),hour,minute,second);
  //sprintf_P(lcd_buffer,PSTR("%u%u%u%u  %u%u%u%u"),PINB.4,PINB.3,PINB.2,PINA.7, PINA.6,PINA.5,PINA.4,PINA.3);
- my_lcdprint(lcd_buffer); 
+ my_lcdprint(lcd_buffer);
  sprintf_P(lcd_buffer,PSTR("tK=%3i/%3i"),DS_TEMP(TEMP_KUB),tEndRect);
+ my_lcdprint(lcd_buffer, 1);
  break;
  case 9: //Ожидание датчика уровня
  sprintf_P(lcd_buffer,PSTR("%02u:%02u:%02u R Wait"),hour,minute,second);
  //sprintf_P(lcd_buffer,PSTR("%u%u%u%u  %u%u%u%u"),PINB.4,PINB.3,PINB.2,PINA.7, PINA.6,PINA.5,PINA.4,PINA.3);
- my_lcdprint(lcd_buffer); 
+ my_lcdprint(lcd_buffer);
  sprintf_P(lcd_buffer,PSTR("by Urov=%3i/%3i"),U_UROVEN,UROVEN_ALARM);
+ my_lcdprint(lcd_buffer, 1);
  break;
  case 100: //Окончание
  sprintf_P(lcd_buffer,PSTR("%02u:%02u:%02u ND End"),hour,minute,second);
  //sprintf_P(lcd_buffer,PSTR("%u%u%u%u  %u%u%u%u"),PINB.4,PINB.3,PINB.2,PINA.7, PINA.6,PINA.5,PINA.4,PINA.3);
- my_lcdprint(lcd_buffer); 
+ my_lcdprint(lcd_buffer);
  sprintf_P(lcd_buffer,PSTR("tK=%3i/%3i"),DS_TEMP(TEMP_KUB),tEndRect);
+ my_lcdprint(lcd_buffer, 1);
  break;
  case 101: //Температура в ТСА превысила предельную
  formTSAErr();
@@ -981,6 +1123,7 @@ void DisplayNDRF()
  //sprintf_P(lcd_buffer,PSTR("%u%u%u%u  %u%u%u%u"),PINB.4,PINB.3,PINB.2,PINA.7, PINA.6,PINA.5,PINA.4,PINA.3);
  my_lcdprint(lcd_buffer); //вывод сz`одержимого буфера на LCD
  sprintf_P(lcd_buffer,PSTR("MPX5010=%3i/%3i"),U_MPX5010,AlarmMPX5010);
+ my_lcdprint(lcd_buffer, 1);
  break;
 
  }
@@ -989,6 +1132,7 @@ void DisplayNDRF()
  {
  PRINT_TEMPERATURES();
  sprintf_P(lcd_buffer,PSTR("%3immV=%4u,%4u"),U_MPX5010,U_UROVEN,U_GLV);
+ 	my_lcdprint(lcd_buffer, 1);
  }
 
  }*/
@@ -997,127 +1141,148 @@ void DisplayNBK() // ******************** Режим НБК ********************
 {
     if (DispPage == 0) {
         switch (StateMachine) {
-            lcd.clear();
+            dirtyTrickLcdClear();
         case 0: //Не запущено
             sprintf_P(lcd_buffer, PSTR("      %02u:%02u:%02u"), hour, minute, second);
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("  \240PA\243HO\246 KO\247OHHO\246")); //БРАЖНОЙ КОЛОННОЙ
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("  БPAЖHOЙ KOЛOHHOЙ")); //БРАЖНОЙ КОЛОННОЙ
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("    HE\250PEP\256BHO\246")); //НЕПРЕРЫВНОЙ
+            dirtyTrickSetCursor(0, 2);
+            sprintf_P(lcd_buffer, PSTR("    HEПPEPЫBHOЙ")); //НЕПРЕРЫВНОЙ
             my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("    \340\245CT\245\247\247\261\341\245\261")); //ДИСТИЛЛЯЦИЯ
+            sprintf_P(lcd_buffer, PSTR("    ДИCTИЛЛЯЦИЯ")); //ДИСТИЛЛЯЦИЯ
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 1:
-            lcd.clear();
-            lcd.setCursor(0, 1);
-            sprintf_P(lcd_buffer, PSTR("       \243\340\245TE \356"));
-            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR("       ЖДИTE \356"));
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 2: //Ожидание закипания (прогреется дефлегматор)
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u H\240K PA\244\241OH"), hour, minute, second); //00:00:00 НБК РАЗГОН
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u HБK PAЗГOH"), hour, minute, second); //00:00:00 НБК РАЗГОН
             my_lcdprint(lcd_buffer);
             formTRZGDistill();
             break;
         case 3: //Ожидание запуска
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u CTAPT H\240K"), hour, minute, second); //00:00:00 СТАРТ НБК
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u НБК CTAPT"), hour, minute, second); //00:00:00 СТАРТ НБК
             my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("\275a\266\274\270 \272\275o\276\272\171 <BBEPX>")); //нажми кнопку <ВВЕРХ>
+            sprintf_P(lcd_buffer, PSTR("нaжми кнoпку <BBEPX>")); //нажми кнопку <ВВЕРХ>
+            my_lcdprint(lcd_buffer, 2);
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Дaвлeниe  = %i.%immHg"), U_MPX5010 / 10, abs(U_MPX5010 % 10)); //9.04.21 Давление(MPX)=
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("\340a\263\273e\275\270e(MPX)=%i.%imm"), U_MPX5010 / 10, U_MPX5010 % 10); //Давление(MPX)=
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("\340\273\307 c\277ap\277a H\240K")); //Для старта НБК,
+            sprintf_P(lcd_buffer, PSTR("Для cтapтa HБK")); //Для старта НБК,
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 4: //Запущено
         case 6: //Запущено, подача браги остановлена
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u PA\240OTA H\240K"), hour, minute, second); //00:00:00 РАБОТА НБК
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u HБK PAБOTA"), hour, minute, second); //00:00:00 РАБОТА НБК
             my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("\340a\263\273e\275\270e(MPX)=%i.%imm"), U_MPX5010 / 10, U_MPX5010 % 10); //Давление(MPX)=
+
+            sprintf_P(lcd_buffer, PSTR("Дaвлeниe  = %i.%immHg"), U_MPX5010 / 10, abs(U_MPX5010 % 10)); //9.04.21 Давление(MPX)=
+            my_lcdprint(lcd_buffer, 2);
+
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4uW"), UstPower); //5.04.21 Мощность =
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("Mo\346\275oc\277\304 =%4uW"), UstPower); //Мощность =
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("C\272opoc\277\304 Hacoca=%4i"), (int)SpeedNBK); //Скорость Насоса=
+
+            sprintf_P(lcd_buffer, PSTR("Cкopocть подачи =%3i"), (int)SpeedNBK); //25.04.21 Скорость Насоса=
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 5: //Превышение температуры вверху
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u H\240K"), hour, minute, second); //НБК
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u HБK"), hour, minute, second); //НБК
             my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Oc\277a\273oc\304 - %4i"), time2); //Осталось -
+
+            sprintf_P(lcd_buffer, PSTR("Ocтaлocь  - %i.%i мин"), time2 / 60, (time2 / 6) % 10); //24.04.21 Осталось -
+            my_lcdprint(lcd_buffer, 2);
+
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("ПPEBЫШEHИE T ВBEPXУ")); //25.04.21 ПРЕВЫШЕНИЕ ТЕМП.ВЕРХ
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("\250PEB\256\254EH\245E TEM\250.BEPX")); //ПРЕВЫШЕНИЕ ТЕМП.ВЕРХ
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.\340e\344a = %i.%i/97,0"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10); //Темп.Дефa=
+
+            sprintf_P(lcd_buffer, PSTR("ВЕРХ    = %i.%i/98 \337С"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10); //10.04.21 Темп.Дефa=
+            my_lcdprint(lcd_buffer, 1);
             break;
         case 100: //Окончание
-            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u \250PO\341ECC"), hour, minute, second); //02u:%02u:%02 ПРОЦЕСС
+            sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u НБК ПPOЦECC"), hour, minute, second); //02u:%02u:%02 ПРОЦЕСС
             my_lcdprint(lcd_buffer);
-            printf_P(lcd_buffer, PSTR("\340a\263\273e\275\270e(MPX)=%i.%imm"), U_MPX5010 / 10, U_MPX5010 % 10); //Давление(MPX)=
+
+            sprintf_P(lcd_buffer, PSTR("Дaвлeниe  = %i.%immHg"), U_MPX5010 / 10, abs(U_MPX5010 % 10)); //9.04.21 Давление(MPX)=
+            dirtyTrickSetCursor(0, 2);
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("C\272opoc\277\304 Hacoca=%4i"), (int)SpeedNBK); //Скорость Насоса=
+
+            sprintf_P(lcd_buffer, PSTR("Cкopocть подачи =%3i"), (int)SpeedNBK); //25.04.21 Скорость Насоса=
+            dirtyTrickSetCursor(0, 3);
             my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("\250EPE\241OHK\245 OKOH\253EH")); //ПЕРЕГОНКИ ОКОНЧЕН
+
+            sprintf_P(lcd_buffer, PSTR(" ПEPEГOHKИ OKOHЧEH")); //ПЕРЕГОНКИ ОКОНЧЕН
+            dirtyTrickSetCursor(0, 1);
+            my_lcdprint(lcd_buffer);
             break;
         }
     } else {
         PRINT_TEMPERATURES();
-        sprintf_P(lcd_buffer, PSTR("\274a\272c.\267a \276ep\270o\343=%i.%i"), MaxPressByPeriod / 10, MaxPressByPeriod % 10); //макс.за период=
+        sprintf_P(lcd_buffer, PSTR("Max за период = %imm"), MaxPressByPeriod / 10); ////25.04.21 макс.за период=
+        my_lcdprint(lcd_buffer, 2);
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4uW"), UstPower); //5.04.21 Мощность =
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("Mo\346\275oc\277\304 =%4uW"), UstPower); //Мощность =
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("\340a\263\273e\275\270e(MPX)=%i.%imm,"), U_MPX5010 / 10, U_MPX5010 % 10); //Давление(MPX)=
+        dirtyTrickSetCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("Дaвлeниe  = %i.%immHg"), U_MPX5010 / 10, abs(U_MPX5010 % 10)); //9.04.21 Давление(MPX)=
+        my_lcdprint(lcd_buffer, 1);
     }
 }
 void DisplayTestKLP() // *************** Тест клапанов *****************
 {
     if (DispPage == 0) {
-        sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u TECT O\240OP-\261"), hour, minute, second); //00:00:00 ТЕСТ ОБОР-Я
+        sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u TECT"), hour, minute, second); //12.04.21 00:00:00 ТЕСТ ОБОР-Я
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\254\245M o\277\272p.\272\273a\276.=%3i%%"), ProcChimSR); //ШИМ откр.клап.=
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("    ОБОРУДОВАНИЯ")); //12.04.21
+        my_lcdprint(lcd_buffer, 1);
+
         if (StateMachine == 2)
-            strcpy_P(str_off, PSTR("B\272\273."));
+            strcpy_P(str_off, PSTR("BКЛ."));
         else
-            strcpy_P(str_off, PSTR("O\277\272\273"));
-        sprintf_P(lcd_buffer, PSTR("Coc\277.\272\273a\276a\275o\263 > %s"), str_off); //Сост.клапанoв >
+            strcpy_P(str_off, PSTR("СТОП"));
+
+        sprintf_P(lcd_buffer, PSTR("Тест клaпaнoв - %s"), str_off); //12.04.21 Сост.клапанoв >
+        my_lcdprint(lcd_buffer, 2);
+        sprintf_P(lcd_buffer, PSTR("Процент ШИM = %3i%%"), ProcChimSR); //12.04.21 ШИМ откр.клап.=
+        my_lcdprint(lcd_buffer, 3);
+
     } else {
         PRINT_TEMPERATURES();
         sprintf_P(lcd_buffer, PSTR("ds4=%i.%i, ds5=%i.%i"), DS_TEMP(3) / 10, DS_TEMP(3) % 10, DS_TEMP(4) / 10, DS_TEMP(4) % 10);
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\251po\263e\275\304 \241A\244A =%4u"), U_GAS); //Уровень ГАЗА =
+        my_lcdprint(lcd_buffer, 1);
     }
 }
 
 void DisplayExtContol() //**************** Внешнее управление *********************
 {
     if (DispPage == 0) {
-        sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u BHE\254.\251\250PAB\247"), hour, minute, second); //ВНЕШ.УПРАВЛ
+        sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u BHEШ.УПPABЛ"), hour, minute, second); //ВНЕШ.УПРАВЛ
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("\251c\277.Mo\346\275oc\277\304 =%4iW"), UstPower); //Уст.Мощность =
+
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Уст.Мощность =
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("Te\274\276-pa \340e\344a = %i.%i"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10); //Темп-ра Дефа =
+
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("Дефлегматор = %i.%i\337С"), DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10); ////10.04.21 Темп-ра Дефа =
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("Te\274\276ep-pa K\171\262a=%i.%i"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10); //Темпер-ра Куба =
+
+        sprintf_P(lcd_buffer, PSTR("Куб       =%i.%i \337С"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10); //10.04.21 Темпер-ра Куба =
+        my_lcdprint(lcd_buffer, 1);
     } else {
         PRINT_TEMPERATURES();
-        sprintf_P(lcd_buffer, PSTR("Te\274\276-pa DS(5)=%i.%i,"), DS_TEMP(4) / 10, DS_TEMP(4) % 10); //Темп-ра DS(5) =
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("\251po\263e\275\304 \241A\244A=%4u"), U_GAS); //Уровень ГАЗА =
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("Te\274\276-pa DS(4)=%i.%i,"), DS_TEMP(3) / 10, DS_TEMP(3) % 10); //Темп-ра DS(4) =
+        sprintf_P(lcd_buffer, PSTR("Teмп-pa DS(5)=%i.%i,"), DS_TEMP(4) / 10, DS_TEMP(4) % 10); //Темп-ра DS(5) =
+        my_lcdprint(lcd_buffer, 2);
+
+        sprintf_P(lcd_buffer, PSTR("Уpoвeнь ГAЗA = %4u"), U_GAS); //Уровень ГАЗА =
+        my_lcdprint(lcd_buffer, 3);
+
+        sprintf_P(lcd_buffer, PSTR("Teмп-pa DS(4)=%i.%i,"), DS_TEMP(3) / 10, DS_TEMP(3) % 10); //Темп-ра DS(4) =
+        my_lcdprint(lcd_buffer, 1);
     }
 }
 
@@ -1127,83 +1292,90 @@ void DisplayBeer() // ********************* Пивоварение *************
         if (StateMachine == 0) {
             sprintf_P(lcd_buffer, PSTR("      %02u:%02u:%02u"), hour, minute, second); //00:00:00
             my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("                    "));
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("    \250\245BOBAPEH\245E")); //ПИВОВАРЕНИЕ
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("                    "));
+
+            sprintf_P(lcd_buffer, PSTR("    ПИBOBAPEHИE")); //ПИВОВАРЕНИЕ
+            my_lcdprint(lcd_buffer, 1);
         }
+
+        if (StateMachine == 1) { //Не запущено
+            sprintf_P(lcd_buffer, PSTR("       ЖДИTE \356"));
+            my_lcdprint(lcd_buffer, 1);
+        }
+
         if (StateMachine == 2) {
             if (KlTek == 1) {
-                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u HA\241PEB BO\340\256"), hour, minute, second); //00:00:00 НАГРЕВ ВОДЫ
+                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u HAГPEB BOДЫ"), hour, minute, second); //00:00:00 НАГРЕВ ВОДЫ
+                my_lcdprint(lcd_buffer, 0);
+
+                sprintf_P(lcd_buffer, PSTR("Вода = %i.%i/%i \337С"), DS_TEMP(TEMP_TERMOSTAT) / 10, DS_TEMP(TEMP_TERMOSTAT) % 10, (int)tempP[KlTek]); //25.04.21 Темп.воды =
+                my_lcdprint(lcd_buffer, 1);
+
+                sprintf_P(lcd_buffer, PSTR("Hacoc/Meшaлкa - %4i"), time1); //Hacoc/Мешалка -
+                my_lcdprint(lcd_buffer, 2);
+
+                sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), PowerVarkaZerno); //25.04.21 Макс.мощность
+                my_lcdprint(lcd_buffer, 3);
+
+            } else {
+                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u BAPKA CУCЛA"), hour, minute, second); //00:00:00 ВАРКА СУСЛА
                 my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("Hacoc/Me\301a\273\272a - %4i"), time1); //Hacoc/Мешалка -
-                my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("Ma\272c.\274o\346\275oc\277\304 = %4iW"), PowerVarkaZerno); //Макс.мощность =
-                my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 1);
-                sprintf_P(lcd_buffer, PSTR("Te\274\276.\263o\343\303 = %i.%i/%i"), DS_TEMP(TEMP_TERMOSTAT) / 10, DS_TEMP(TEMP_TERMOSTAT) % 10, (int)tempP[KlTek]);
-            } //Темп.воды =
-            else {
-                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u BAPKA C\251C\247A"), hour, minute, second); //00:00:00 ВАРКА СУСЛА
-                my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("C\273e\343\171\306\346a\307 \276a\171\267a-%i(%i)"), (int)KlTek, (int)CntPause); //Следующая пауза-
-                my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("Ma\272c.\274o\346\275oc\277\304 = %4iW"), PowerVarkaZerno); //Макс.мощность =
-                my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 1);
-                sprintf_P(lcd_buffer, PSTR("Te\274\276.c\171c\273a = %i.%i/%i"), DS_TEMP(TEMP_TERMOSTAT) / 10, DS_TEMP(TEMP_TERMOSTAT) % 10, (int)tempP[KlTek]);
-            } //Темп.сусла =
+
+                sprintf_P(lcd_buffer, PSTR("Суcло   = %i.%i/%i \337С"), DS_TEMP(TEMP_TERMOSTAT) / 10, DS_TEMP(TEMP_TERMOSTAT) % 10, (int)tempP[KlTek]); //10.04.21 //Темп.сусла =
+                my_lcdprint(lcd_buffer, 1);
+
+                sprintf_P(lcd_buffer, PSTR("Cлeдующaя пaузa %i/%i"), (int)KlTek, (int)CntPause); //12.04.21 Следующая пауза-
+                my_lcdprint(lcd_buffer, 2);
+
+                sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), PowerVarkaZerno); //10.04.21 Макс.мощность =
+                my_lcdprint(lcd_buffer, 3);
+            }
         }
         if (StateMachine == 3) {
             if (timeP[KlTek] != 0) {
-                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u TEM\250.\250A\251\244A"), hour, minute, second); //00:00:00 ТЕМП.ПАУЗА
+                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u TEMП. ПAУЗA"), hour, minute, second); //00:00:00 ТЕМП.ПАУЗА
                 my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("\340o \272o\275\345a%2i-\271 \276a\171\267\303"), (int)KlTek); //До конца №-й паузы
+
+                sprintf_P(lcd_buffer, PSTR("Дo кoнцa%2i-й пaузы"), (int)KlTek); //До конца №-й паузы
+                my_lcdprint(lcd_buffer, 2);
+
+                sprintf_P(lcd_buffer, PSTR("ocтaлocь: %5i мин"), time2 / 60); //24.04.21 oсталось:
+                my_lcdprint(lcd_buffer, 3);
+
+                sprintf_P(lcd_buffer, PSTR("Суcло  = %i.%i/%i \337С"), DS_TEMP(TEMP_TERMOSTAT) / 10, DS_TEMP(TEMP_TERMOSTAT) % 10, (int)tempP[KlTek]); //10.04.21 Tемперат.сусла=
+                my_lcdprint(lcd_buffer, 1);
+            } else {
+                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u TEXHИЧECKAЯ"), hour, minute, second); //00:00:00 ТЕХНИЧЕСКАЯ
                 my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("oc\277a\273oc\304: %5i"), time2); //oсталось:
-                my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 1);
-                sprintf_P(lcd_buffer, PSTR("Te\274\276.c\171c\273a= %i.%i/%i"), DS_TEMP(TEMP_TERMOSTAT) / 10, DS_TEMP(TEMP_TERMOSTAT) % 10, (int)tempP[KlTek]);
-            } //Tемперат.сусла=
-            else {
-                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u TEXH\245\253ECKA\261"), hour, minute, second); //00:00:00 ТЕХНИЧЕСКАЯ
-                my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("\275a\266\274\270 \272\275o\276\272\171 <BBEPX>")); //нажми кнопку <BBEPX>
-                my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("\250a\171\267a - %i(%i)"), (int)KlTek + 1, (int)CntPause); //Пауза -
-                my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 1);
-                sprintf_P(lcd_buffer, PSTR("\250A\251\244A \356 \340\273\307 \276epexo\343a")); //ПАУЗА  Для перехода
+
+                sprintf_P(lcd_buffer, PSTR("нaжми кнoпку <BBEPX>")); //нажми кнопку <BBEPX>
+                my_lcdprint(lcd_buffer, 2);
+
+                sprintf_P(lcd_buffer, PSTR("Пaузa - %i(%i)"), (int)KlTek + 1, (int)CntPause); //Пауза -
+                my_lcdprint(lcd_buffer, 3);
+
+                sprintf_P(lcd_buffer, PSTR("ПAУЗA \356 Для пepexoдa")); //ПАУЗА  Для перехода
+                my_lcdprint(lcd_buffer, 1);
             }
         }
         if (StateMachine == 100) {
-            sprintf_P(lcd_buffer, PSTR("                    "));
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("      \244AKOH\253EHA"));
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("                    "));
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 1);
             sprintf_P(lcd_buffer, PSTR("        BAPKA"));
+            my_lcdprint(lcd_buffer, 1);
+
+            sprintf_P(lcd_buffer, PSTR("      ЗAKOHЧEHA"));
+            my_lcdprint(lcd_buffer, 2);
         }
     } else { //Tемперат.сусла=
-        sprintf_P(lcd_buffer, PSTR("Te\274\276epa\277.c\171c\273a= %i.%i"), DS_TEMP(TEMP_TERMOSTAT) / 10, DS_TEMP(TEMP_TERMOSTAT) % 10);
+        sprintf_P(lcd_buffer, PSTR("Teмп-ра cуcлa = %i.%i"), DS_TEMP(TEMP_TERMOSTAT) / 10, DS_TEMP(TEMP_TERMOSTAT) % 10);
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\340a\263\273e\275\270e(MPX)=%i.%imm"), U_MPX5010 / 10, U_MPX5010 % 10); //Давление(MPX)=
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("B\303x.Mo\346\275oc\277\304 = %4iW"), UstPower); //Вых.Мощность =
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("Hacoc/Me\301a\273\272a - %4i"), time1); //Hacoc/Мешалка -
+
+        sprintf_P(lcd_buffer, PSTR("Hacoc/Meшaлкa - %4i"), time1); //Hacoc/Мешалка -
+        my_lcdprint(lcd_buffer, 1);
+
+        sprintf_P(lcd_buffer, PSTR("Дaвлeниe  = %i.%immHg"), U_MPX5010 / 10, abs(U_MPX5010 % 10)); //9.04.21 Давление(MPX)=
+        my_lcdprint(lcd_buffer, 2);
+
+        sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Вых.Мощность =
+        my_lcdprint(lcd_buffer, 3);
     }
 }
 
@@ -1212,8 +1384,6 @@ void DisplayData() //************ РЕЖИМ ПРОСМОТРА ****************
     int tic1;
     static int PrevState = 0;
     static char flDspDop = 0; // Флаг для отображения информации (через раз)
-    char j; // Временная переменная для цикла
-    flNumStrPrint = 0;
     flDspDop = !flDspDop;
 
     hour = Seconds / 3600;
@@ -1221,8 +1391,13 @@ void DisplayData() //************ РЕЖИМ ПРОСМОТРА ****************
     minute = tic1 / 60;
     second = tic1 % 60;
 
+    // clear raw output status to track printed rows
+    for (int i = 0; i < LCD_HEIGHT; i++) {
+        bRawOutputStatus[i] = false;
+    }
+
     if (FlState == 0)
-        lcd.setCursor(0, 0);
+        dirtyTrickSetCursor(0, 0);
     else {
         // Если предыдущее состояние было 0, то даем задерку в 1/10 секунды, чтобы не слишком часто обновлялся
         // дисплей.
@@ -1230,11 +1405,11 @@ void DisplayData() //************ РЕЖИМ ПРОСМОТРА ****************
             delay(100);
 
         if (FlState != PrevState) {
-            lcd.clear(); //очистка дисплея
+            dirtyTrickLcdClear(); //очистка дисплея
             PrevState = FlState;
         }
 
-        lcd.setCursor(0, 0);
+        dirtyTrickSetCursor(0, 0);
     }
 
 #ifdef TESTMEM
@@ -1244,639 +1419,704 @@ void DisplayData() //************ РЕЖИМ ПРОСМОТРА ****************
 
     switch (FlState) {
     case 0:
+        // Рисуем основные 10 экранов
+        displayMainScreens(flDspDop);
+        break;
 
-        if (DispPage < 2) // Первые две страницы отображаются по-разному, остальные всегда одни и те же
-        {
-            switch (IspReg) {
-            case 101: // Displaying
+    case 100 ... 199:
+        // Здесь отобрадаем меню с выбором процесса
+        displayProcessSelector(FlState);
+        break;
 
-                //  Выводим сетевое напряжение по тому же принципу, что и работают дешевые вольтметры, то есть максимальное количество вольт в сети умножаем на 0,707
-                //  это напряжение нужно для калибровки нашего измерителя
+    default:
+        // Тут будем отображать настройки
+        displaySettings(FlState);
+        break;
+    }
 
-                if (DispPage == 0) {
-                    sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u \340\270c\276\273e\271 1/2"), hour, minute, second); //00:00:00 Дисплей 1/2
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 3);
-                    sprintf_P(lcd_buffer, PSTR("  homedistiller.ru"));
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 2);
-                    sprintf_P(lcd_buffer, PSTR("       forum."));
-                    my_lcdprint(lcd_buffer);
-                    sprintf_P(lcd_buffer, PSTR("U=%3iB, Zr=%4u(\277\270\272)"), (uint16_t)MaxVoltsOut, TicZero); //Напряжение =
-                }
+    //
+    //  dirtyTrickSetCursor(0, 0);
+    //  my_lcdprint(Seconds);
+    //  dirtyTrickSetCursor(5, 0);
+    //  my_lcdprint(MaxVoltsOut);
+    //  dirtyTrickSetCursor(9, 0);
+    //  my_lcdprint((long)MaxVoltsOut*707/1000);
+    //  dirtyTrickSetCursor(0, 1);
+    //  my_lcdprint(index_input);
+    //  dirtyTrickSetCursor(5, 1);
+    //  my_lcdprint(TimeOpenTriac);
+    //  NeedDisplaying=false;
+    //  dirtyTrickSetCursor(10, 1);
+    //  my_lcdprint(TicZero);
+    // предупреждения теперь выводим на всех страницах.
 
-                if (DispPage == 1) {
-                    PRINT_TEMPERATURES();
-                    sprintf_P(lcd_buffer, PSTR("\251po\263e\275\304 \241o\273o\263 = %4u"), U_GLV); //Уровень Голов =
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 3);
-                    sprintf_P(lcd_buffer, PSTR("\251po\263e\275\304 \263 Tape =%4u"), U_UROVEN); //Уровень в Таре =
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 1);
-                    sprintf_P(lcd_buffer, PSTR("Po\267\273\270\263 Bo\343\303 =   %4u"), U_VODA); //Розлив Воды =
-                }
-                break;
+    // Clear all empty raws
+    for (int i = 0; i < LCD_HEIGHT; i++) {
+        if (bRawOutputStatus[i])
+            continue;
 
-            case 102: //****************** Термостат ************************
-                if (DispPage == 0) {
-                    sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u TEPMOCTAT"), hour, minute, second);
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 3);
-                    if (StateMachine == 2)
-                        strcpy_P(str_off, PSTR("HA\241PEB"));
-                    else
-                        strcpy_P(str_off, PSTR("      "));
-                    sprintf_P(lcd_buffer, PSTR("\340e\273\304\277a = %i.%i %s"), Delta / 10, abs(Delta % 10), str_off); //Дельта =
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 2);
-                    sprintf_P(lcd_buffer, PSTR("\277ep\274oc\277a\277a=%i.%i/%i.%i"), DS_TEMP(TEMP_TERMOSTAT) / 10, DS_TEMP(TEMP_TERMOSTAT) % 10, TempTerm / 10, TempTerm % 10);
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 1);
-                    sprintf_P(lcd_buffer, PSTR("Te\274\276epa\277\171pa pa\262o\277\303")); //Температура работы
-                } else {
-                    PRINT_TEMPERATURES();
-                    sprintf_P(lcd_buffer, PSTR("\340a\263\273e\275\270e(MPX)=%i.%imm"), U_MPX5010 / 10, U_MPX5010 % 10); //Давление(MPX)=
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 3);
-                    sprintf_P(lcd_buffer, PSTR("B\303x.\274o\346\275oc\277\304 = %4iW"), PowerVarkaZerno); //Вых.мощность =
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 1);
-                    sprintf_P(lcd_buffer, PSTR("ds4=%i.%i, ds5=%i.%i"), DS_TEMP(3) / 10, DS_TEMP(3) % 10, DS_TEMP(4) / 10, DS_TEMP(4) % 10);
-                }
-                break;
+        // Erase single raw
+        lcd_buffer[0] = ' ';
+        lcd_buffer[1] = '\0';
+        my_lcdprint(lcd_buffer, i);
+    }
+    NeedDisplaying = false;
+}
 
-            case 115: //****************** Таймер ************************
-                if (DispPage == 0) {
-                    sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u TA\246MEP:"), hour, minute, second, Delta); //00:00:00 ТАЙМЕР:
-                    my_lcdprint(lcd_buffer);
-                    minute = Seconds / 60;
-                    sprintf_P(lcd_buffer, PSTR("\251c\277.Mo\346\275oc\277\304 =%4iW"), UstPower); //Уст.Мощность =
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 3);
-                    sprintf_P(lcd_buffer, PSTR("                    "));
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 1);
-                    sprintf_P(lcd_buffer, PSTR("Bpe\274\307(\274) =%3i/%3i"), minute, timerMinute); //Время(м) =
-                } else {
-                    PRINT_TEMPERATURES();
-                    sprintf_P(lcd_buffer, PSTR("\251c\277.Mo\346\275oc\277\304 =%4iW"), PowerMinute); //Уст.Мощность =
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 3);
-                    sprintf_P(lcd_buffer, PSTR("                    "));
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 1);
-                    sprintf_P(lcd_buffer, PSTR("ds4=%i.%i, ds5=%i.%i"), DS_TEMP(3) / 10, DS_TEMP(3) % 10, DS_TEMP(4) / 10, DS_TEMP(4) % 10);
-                } //ds4= , ds5=
-                break;
+void displayMainScreens(char flDspDop)
+{
 
-            case 116: //******************* Пивоварня - клон браумастера **********************
-                DisplayBeer();
-                break;
-            case 103: //******************** Регулятор мощности *************************
-                if (DispPage == 0) {
+    displayInitialTwoPages();
+    // Третья страница отображения универсальна, там показываем напряжение, дистанцию и возможное число ошибок
+    // расчета среднеквадратичного.
+
+    if (DispPage == 2) {
+#if USE_GSM_WIFI == 1
+        sprintf_P(lcd_buffer, PSTR("C3 %3i,w%3u,i%3i"), (int)flGPRSState, (int)timeWaitGPRS, (int)timeGPRS);
+        my_lcdprint(lcd_buffer);
+#else
+        sprintf_P(lcd_buffer, PSTR("C3  Фактические:")); //20.04.21 Hет GSM поддержки
+        my_lcdprint(lcd_buffer);
+#endif
+
+        dtostrf((float)MaxIOut / 10, 6, 2, str_cur);
+        sprintf_P(lcd_buffer, PSTR("Ток      I = %sA"), str_cur); //8.04.21 Выходной I=
+        my_lcdprint(lcd_buffer, 2);
+
+        sprintf_P(lcd_buffer, PSTR("Мощность P =   %4iW"), FactPower); //5.04.21 Выходная P=
+        my_lcdprint(lcd_buffer, 3);
+
+        sprintf_P(lcd_buffer, PSTR("Bxoднoe  U =    %3uV"), (uint16_t)MaxVoltsOut); //Входное U=
+        my_lcdprint(lcd_buffer, 1);
+    }
+    // На четвертой странице показываем всю температуру и давление
+    if (DispPage == 3) {
+        sprintf_P(lcd_buffer, PSTR("C4 Teмпepaтуpa, \337С:")); //10.04.21 С4 Температура:
+        my_lcdprint(lcd_buffer);
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("ds5=%i.%i"), DS_TEMP(4) / 10, DS_TEMP(4) % 10); //9.04.21 ds5=   ,Давл.=
+        my_lcdprint(lcd_buffer);
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("TCA=%i.%i, ds4=%i.%i,"), DS_TEMP(TEMP_TSA) / 10, DS_TEMP(TEMP_TSA) % 10, DS_TEMP(3) / 10, DS_TEMP(3) % 10);
+        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("Куб=%i.%i,Дeфл=%i.%i,"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10);
+        my_lcdprint(lcd_buffer, 1);
+    }
+
+    // На пятой странице показываем состояние датчиков уровней                                             //Куб=   , Дефл=   ,
+    if (DispPage == 4) {
+        sprintf_P(lcd_buffer, PSTR("C5 Poзлив Boды =%4u"), U_VODA); //Розлив Воды=
+        my_lcdprint(lcd_buffer, 0);
+
+        sprintf_P(lcd_buffer, PSTR("Уpoвeнь Гaзa   =%4u"), U_GAS); //8.04.21 Уровень Газа=
+        my_lcdprint(lcd_buffer, 3);
+
+        sprintf_P(lcd_buffer, PSTR("Уpoвeнь Гoлoв  =%4u"), U_GLV); //Уровень Голов =
+
+        my_lcdprint(lcd_buffer, 2);
+
+        dirtyTrickSetCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("Уpoвeнь в Tape =%4u"), U_UROVEN); //Уровень в Таре=
+        my_lcdprint(lcd_buffer, 1);
+    }
+
+    // На шестой странице показываем состояние датчиков уровней //8.04.21
+    if (DispPage == 5) {
+
+        sprintf_P(lcd_buffer, PSTR("C6 Давление, mmHg:")); //8.04.21 Уровень Газа=
+        my_lcdprint(lcd_buffer);
+
+        sprintf_P(lcd_buffer, PSTR("в кубе        = %i.%i"), U_MPX5010 / 10, abs(U_MPX5010 % 10)); //24.04.21 Давление(MPX)=
+        dirtyTrickSetCursor(0, 1);
+        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("аварийное     =  %i"), AlarmMPX5010 / 10); //24.04.21
+        dirtyTrickSetCursor(0, 2);
+        my_lcdprint(lcd_buffer);
+
+#if USE_BMP280_SENSOR
+        sprintf_P(lcd_buffer, PSTR("атмосферное   =  %3i"), PressAtm); //8.04.21 //Атм. Давление=
+        dirtyTrickSetCursor(0, 3);
+        my_lcdprint(lcd_buffer);
+#endif // USE_BMP280_SENSOR
+    }
+
+    // На седьмой странице показываем состояние регулятора мощности
+    if (DispPage == 6) {
+#if NUM_PHASE == 1
+        sprintf_P(lcd_buffer, PSTR(" %4i,%4i,%4iW"), UstPwrPH1, UstPwrPH2, UstPwrPH3);
+        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("C7 %3i,%3i,%3i %%"), KtPhase[0], KtPhase[1], KtPhase[2]);
+#else
+        sprintf_P(lcd_buffer, PSTR("C7 Z=%4u"), TicZero);
+        my_lcdprint(lcd_buffer);
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("Bz=%3u"), (int)b_value[0]);
+        my_lcdprint(lcd_buffer);
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("Bpeмя вкл. КЛП=%4u"), TimeOpenKLP); // 1.04.21  //Время вкл.клп.=
+        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("Bpeмя вкл. TRIAC=%4u"), TimeOpenTriac); // 1.04.21   //Время вкл.ВТА41=
+#endif
+        my_lcdprint(lcd_buffer, 1);
+    }
+
+    // На восьмой можно сменить состояние процесса.
+    if (DispPage == 7) {
+        sprintf_P(lcd_buffer, PSTR("C8   Cмeнa этaпa")); //C8 Смена этапа
+        my_lcdprint(lcd_buffer);
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("                    "));
+        my_lcdprint(lcd_buffer);
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("      Этaп = %i"), (int)StateMachine); //Этап =
+        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR(" текущего пpoцecca:")); //процесса:
+        my_lcdprint(lcd_buffer, 1);
+    }
+
+    // На девятой состояние ПИД-регулятора
+    if (DispPage == 8) {
+        sprintf_P(lcd_buffer, PSTR("C9 ПИД-peг.мoщнocти:")); //ПИД-рег.мощности:
+        my_lcdprint(lcd_buffer);
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("Dt=%4i It=%4i"), Dt, It);
+        my_lcdprint(lcd_buffer);
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("Cтapaя oш.paccoг-%4i"), OldErrOut); //Старые ош.рассог-
+        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("Hoвaя oш.paccoгл-%4i"), NewErr); //Новые ош.рассогл-
+        my_lcdprint(lcd_buffer, 1);
+    }
+    // На Десятой странице показываем максимальные температуры за процесс температуру и давление
+    if (DispPage == 9) {
+        sprintf_P(lcd_buffer, PSTR("C10 Тeмпepaтуpa max")); //19.04.2 Макс.температура
+        my_lcdprint(lcd_buffer);
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("ds4=%i.%i, ds5=%i.%i"), MAX_DS_TEMP(3) / 10, MAX_DS_TEMP(3) % 10, MAX_DS_TEMP(4) / 10, MAX_DS_TEMP(4) % 10);
+        my_lcdprint(lcd_buffer);
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("ds2=%i.%i, ds3=%i.%i,"), MAX_DS_TEMP(1) / 10, MAX_DS_TEMP(1) % 10, MAX_DS_TEMP(2) / 10, MAX_DS_TEMP(2) % 10);
+        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("зa пpoцecc ds1=%i.%i"), MAX_DS_TEMP(0) / 10, MAX_DS_TEMP(0) % 10); //19.04.21 за процесс: ds1=
+        my_lcdprint(lcd_buffer, 1);
+    }
+    // На 11  странице показываем параметры расчета ПИД-регулятора
+    if (DispPage == 10) {
+        sprintf_P(lcd_buffer, PSTR("C11 ПИД-peг.тeмпepaтуpы:")); //ПИД-рег.температуры:
+        my_lcdprint(lcd_buffer);
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("KId %4i %4i %3i"), KtT, ItTemp, DtTemp);
+        my_lcdprint(lcd_buffer);
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("Cтapaя oш.paccoг-%3i"), OldErrTempOut); //Старые ош.рассог-
+        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("Hoвaя oш.paccoгл-%3i"), NewErrTemp); //Новые ош.рассогл-
+        my_lcdprint(lcd_buffer, 1);
+    }
+
+    if (flDspDop && DispDopInfo > 0) // Если отображаем дополнительную информацию, тогда проверяем ее статус
+    {
+
+        if (BeepStateProcess > 1) {
+            if (DispDopInfo == 3 || DispDopInfo == 4) {
+                if (!(BeepStateProcess & B00000010) && DispDopInfo == 3)
+                    my_beep(BEEP_LONG); // Не пищим, если установлена маска в 2 разряде
+                if (!(BeepStateProcess & B00000100) && DispDopInfo == 4)
+                    my_beep(BEEP_LONG); // Не пищим, если установлена маска в 3 разряде
+            } else
+                my_beep(BEEP_LONG); // Сначала пищим, предупреждая.
+        } else
+            my_beep(BEEP_LONG); // Сначала пищим, предупреждая.
+
+        dirtyTrickLcdClear();
+        dirtyTrickSetCursor(0, 2);
+        if (DispDopInfo == 1) {
+            sprintf_P(lcd_buffer, PSTR("       (%3i)"), (IspReg == 117 || IspReg == 118) ? COUNT_ALARM_UROVEN_FR - CountAlarmUroven : COUNT_ALARM_UROVEN - CountAlarmUroven);
+            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR("    CMEHИ TAPУ!")); //СМЕНИ ТАРУ!
+            my_lcdprint(lcd_buffer, 1);
+        }
+        if (DispDopInfo == 2) {
+            sprintf_P(lcd_buffer, PSTR("       (%3i)"), COUNT_ALARM_VODA - CountAlarmVoda);
+            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR("   ПPOTEЧKA BOДЫ!")); //ПРОТЕЧКА ВОДЫ!
+            my_lcdprint(lcd_buffer, 1);
+        }
+        if (DispDopInfo == 3) {
+            sprintf_P(lcd_buffer, PSTR("       %3iV"), (uint16_t)MaxVoltsOut);
+            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR(" HИЗKOE HAПPЯЖEHИE!")); //НИЗКОЕ НАПРЯЖЕНИЕ!
+            my_lcdprint(lcd_buffer, 1);
+        }
+        if (DispDopInfo == 6) {
+            sprintf_P(lcd_buffer, PSTR("       %3iV"), (uint16_t)MaxVoltsOut);
+            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR("BЫCOKOE HAПPЯЖEHИE!")); //ВЫСОКОЕ НАПРЯЖЕНИЕ!
+            my_lcdprint(lcd_buffer, 1);
+        }
+        if (DispDopInfo == 4) {
+            sprintf_P(lcd_buffer, PSTR("      (%2i)"), (int)NumErrDs18);
+            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR("  OШИБKA DS18B20!")); //ОШИБКА DS18B20!
+            my_lcdprint(lcd_buffer, 1);
+        }
+        if (DispDopInfo == 5) {
+            sprintf_P(lcd_buffer, PSTR("   %3i/%3i mmHg"), U_MPX5010 / 10, AlarmMPX5010 / 10); //11.04.21
+            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR("    ДABЛEHИE(!)")); //ДАВЛЕНИЕ(!)
+            my_lcdprint(lcd_buffer, 1);
+        }
+
+#if USE_GSM_WIFI == 1
+        // Активизируем разовую отправку состояния на сервер
+        if (FlToGSM > 1 && flGPRSState != 20 && flGPRSState != 164 && (timeGPRS == 0 || flNeedCall == 1)) {
+            if (flNeedCall == 1) {
+                flGPRSState = 40; // Активируем звонок если в этом есть необходимость
+            } else { // Если в данный момент не производится дозвон, тогда активируем GPRS сессию.
+                if (flNeedCall != 2)
+                    flGPRSState = 2;
+            }
+            // Активируем длительную сессию GPRS
+            flNeedRefrServer = 0;
+            timeGPRS = 250;
+        }
+#endif
+    }
+}
+void displayInitialTwoPages()
+{
+    if (DispPage < 2) // Первые две страницы отображаются по-разному, остальные всегда одни и те же
+    {
+        switch (IspReg) {
+        case 101: // Displaying
+
+            //  Выводим сетевое напряжение по тому же принципу, что и работают дешевые вольтметры,
+            //  то есть максимальное количество вольт в сети умножаем на 0,707
+            //  это напряжение нужно для калибровки нашего измерителя
+
+            if (DispPage == 0) {
+                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u Дисплей 1/2"), hour, minute, second);
+                my_lcdprint(lcd_buffer, 0);
+
+                sprintf_P(lcd_buffer, PSTR("  homedistiller.ru"));
+                my_lcdprint(lcd_buffer, 3);
+
+                sprintf_P(lcd_buffer, PSTR("       forum."));
+                my_lcdprint(lcd_buffer, 2);
+
+                sprintf_P(lcd_buffer, PSTR("U=%3iB, Zr=%4u(тик)"), (uint16_t)MaxVoltsOut, TicZero); //Напряжение =
+                my_lcdprint(lcd_buffer, 1);
+            }
+
+            if (DispPage == 1) {
+                PRINT_TEMPERATURES();
+                dirtyTrickSetCursor(0, 2);
+                sprintf_P(lcd_buffer, PSTR("Уpoвeнь Гoлoв  =%4u"), U_GLV); //Уровень Голов =
+                my_lcdprint(lcd_buffer);
+                dirtyTrickSetCursor(0, 3);
+                sprintf_P(lcd_buffer, PSTR("Уpoвeнь в Tape =%4u"), U_UROVEN); //Уровень в Таре =
+                my_lcdprint(lcd_buffer);
+                dirtyTrickSetCursor(0, 1);
+                sprintf_P(lcd_buffer, PSTR("Poзлив Boды    =%4u"), U_VODA); //Розлив Воды =
+                my_lcdprint(lcd_buffer, 1);
+            }
+            break;
+
+        case 102: //****************** Термостат ************************
+            if (DispPage == 0) {
+                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u TEPMOCTAT"), hour, minute, second);
+                my_lcdprint(lcd_buffer, 0);
+
+                sprintf_P(lcd_buffer, PSTR("Текущяя тeмпepaтуpa")); //4.04.21 Температура работы
+                my_lcdprint(lcd_buffer, 1);
+
+                sprintf_P(lcd_buffer, PSTR("    %i.%i/%i.%i \337C"), DS_TEMP(TEMP_TERMOSTAT) / 10, DS_TEMP(TEMP_TERMOSTAT) % 10, TempTerm / 10, TempTerm % 10); //4.04.21
+                my_lcdprint(lcd_buffer, 2);
+
+                if (StateMachine == 2)
+                    strcpy_P(str_off, PSTR("HAГPEB"));
+                else
+                    strcpy_P(str_off, PSTR("      "));
+                sprintf_P(lcd_buffer, PSTR("Дeльтa = %i.%i %s"), Delta / 10, abs(Delta % 10), str_off); //10.04.21 Дельта =
+                my_lcdprint(lcd_buffer, 3);
+            } else {
+                PRINT_TEMPERATURES();
+
+                sprintf_P(lcd_buffer, PSTR("ds4=%i.%i, ds5=%i.%i"), DS_TEMP(3) / 10, DS_TEMP(3) % 10, DS_TEMP(4) / 10, DS_TEMP(4) % 10);
+                my_lcdprint(lcd_buffer, 1);
+
+                sprintf_P(lcd_buffer, PSTR("Дaвлeниe  = %i.%immHg"), U_MPX5010 / 10, abs(U_MPX5010 % 10)); //9.04.21 Давление(MPX)=
+                my_lcdprint(lcd_buffer, 2);
+
+                sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), PowerVarkaZerno); //25.04.21 Вых.мощность =
+                my_lcdprint(lcd_buffer, 3);
+            }
+            break;
+
+        case 115: //****************** Таймер ************************
+            if (DispPage == 0) {
+                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u TAЙMEP:"), hour, minute, second, Delta); //00:00:00 ТАЙМЕР:
+                my_lcdprint(lcd_buffer);
+
+                minute = Seconds / 60;
+                sprintf_P(lcd_buffer, PSTR("Заданная Р   = %4iW"), UstPower); //5.04.21 Уст.Мощность =
+                dirtyTrickSetCursor(0, 2); //19.04.21
+                my_lcdprint(lcd_buffer);
+
+                sprintf_P(lcd_buffer, PSTR("Bpeмя  = %3i/%3i мин"), minute, timerMinute); // 10.04.21 Время(м) =
+                dirtyTrickSetCursor(0, 1); //19.04.21
+                my_lcdprint(lcd_buffer);
+            } else {
+                PRINT_TEMPERATURES();
+                sprintf_P(lcd_buffer, PSTR("Заданная P = %4iW"), PowerMinute); //19.04.21 Уст.Мощность =
+                dirtyTrickSetCursor(0, 3);
+                my_lcdprint(lcd_buffer);
+
+                sprintf_P(lcd_buffer, PSTR("ds4=%i.%i, ds5=%i.%i"), DS_TEMP(3) / 10, DS_TEMP(3) % 10, DS_TEMP(4) / 10, DS_TEMP(4) % 10);
+                my_lcdprint(lcd_buffer, 1);
+            } //ds4= , ds5=
+
+            break;
+
+        case 116: //******************* Пивоварня - клон браумастера **********************
+            DisplayBeer();
+            break;
+        case 103: //******************** Регулятор мощности *************************
+            if (DispPage == 0) {
 #ifndef USE_SLAVE
-                    sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u RMU=%3u"), hour, minute, second, (uint16_t)MaxVoltsOut);
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 3);
+                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u RMU=%3u"), hour, minute, second, (uint16_t)MaxVoltsOut); //2.04.21 Количество выборок
+                my_lcdprint(lcd_buffer);
+
+                sprintf_P(lcd_buffer, PSTR("    РМ Мощность:")); //19.04.21
+                dirtyTrickSetCursor(0, 1); //19.04.21
+                my_lcdprint(lcd_buffer); //19.04.21
+
+                sprintf_P(lcd_buffer, PSTR("заданная     = %4iW"), UstPowerReg); //2.04.21 за полупериод U =
+                dirtyTrickSetCursor(0, 2); //19.04.21
+                my_lcdprint(lcd_buffer); //19.04.21
+
 #if SIMPLED_VERSION == 20
-                    sprintf_P(lcd_buffer, PSTR("B\303x.Mo\346\275.=%3u/%3u%%"), UstPowerReg / 10, Power / 10); //Вых.Мощность =
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 2);
-                    sprintf_P(lcd_buffer, PSTR("\267a \276o\273\171\276ep\270o\343 U=%3u"), indexOut); //за полупериод U =
-                    my_lcdprint(lcd_buffer);
-                    sprintf_P(lcd_buffer, PSTR("Ko\273\270\300ec\277\263o \263\303\262opo\272")); //Количество выборок
-                    my_lcdprint(lcd_buffer);
+                sprintf_P(lcd_buffer, PSTR("заданная  = %3u/%3u%%"), UstPowerReg / 10, Power / 10); //10.04.21 Вых.Мощность =
 #else
-                    sprintf_P(lcd_buffer, PSTR("B\303x.Mo\346\275.=%4u/%4u"), FactPower, UstPowerReg); //Вых.Мощность =
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 2);
-                    sprintf_P(lcd_buffer, PSTR("\267a \276o\273\171\276ep\270o\343 U=%3u"), indexOut); //за полупериод U =
-                    my_lcdprint(lcd_buffer);
-                    sprintf_P(lcd_buffer, PSTR("Ko\273\270\300ec\277\263o \263\303\262opo\272")); //Количество выборок
-                    my_lcdprint(lcd_buffer);
+                sprintf_P(lcd_buffer, PSTR("фактическая  = %4iW"), FactPower); //2.04.21 Вых.Мощность =
 #endif
+                my_lcdprint(lcd_buffer, 3);
+
 #ifdef TEST
-                    if (NUM_PHASE > 1)
-                        sprintf_P(lcd_buffer, PSTR("%s"), my_rx_buffer);
+                if (NUM_PHASE > 1)
+                    sprintf_P(lcd_buffer, PSTR("%s"), my_rx_buffer);
 #endif
 #else
-                    sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u RMU=%3u"), hour, minute, second, (uint16_t)MaxVoltsOut);
-                    my_lcdprint(lcd_buffer);
-                    sprintf_P(lcd_buffer, PSTR("PSlv=%4u/%4u"), UstPower, Power);
+                sprintf_P(lcd_buffer, PSTR("%02u:%02u:%02u RMU=%3u"), hour, minute, second, (uint16_t)MaxVoltsOut);
+                my_lcdprint(lcd_buffer);
+                sprintf_P(lcd_buffer, PSTR("PSlv=%4u/%4u"), UstPower, Power);
 #endif
-                } else {
-                    PRINT_TEMPERATURES();
+            } else {
+                PRINT_TEMPERATURES();
 #ifndef USE_SLAVE
-                    lcd.setCursor(0, 3);
-                    sprintf_P(lcd_buffer, PSTR("\272\275o\276\272\171 <BBEPX> %4uW"), Power); //кнопку <ВВЕРХ>
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 2);
-                    sprintf_P(lcd_buffer, PSTR("\274o\346\275oc\277\270 T\257HA,\275a\266a\277\304")); //мощности ТЭНА,нажать
-                    my_lcdprint(lcd_buffer);
-                    sprintf_P(lcd_buffer, PSTR("\340\273\307 a\263\277oo\276pe\343e\273e\275\270\307")); //Для автоопределения
-                    my_lcdprint(lcd_buffer);
+                dirtyTrickSetCursor(0, 3);
+                sprintf_P(lcd_buffer, PSTR("кнoпку <BBEPX> %4uW"), Power); //кнопку <ВВЕРХ>
+                my_lcdprint(lcd_buffer);
+                dirtyTrickSetCursor(0, 2);
+                sprintf_P(lcd_buffer, PSTR("мoщнocти TЭHA,нaжaть")); //мощности ТЭНА,нажать
+                my_lcdprint(lcd_buffer);
+                sprintf_P(lcd_buffer, PSTR("Для aвтooпpeдeлeния")); //Для автоопределения
+                my_lcdprint(lcd_buffer, 1);
 #else
-                    if (flAutoDetectPowerTEN)
-                        lcd.setCursor(0, 3);
-                    sprintf_P(lcd_buffer, PSTR("\272\275o\276\272\171 <BBEPX> %4uW"), Power); //кнопку <ВВЕРХ>
-                    my_lcdprint(lcd_buffer);
-                    lcd.setCursor(0, 2);
-                    sprintf_P(lcd_buffer, PSTR("\274o\346\275oc\277\270 T\257HA,\275a\266a\277\304")); //мощности ТЭНА,нажать
-                    my_lcdprint(lcd_buffer);
-                    sprintf_P(lcd_buffer, PSTR("\340\273\307 a\263\277oo\276pe\343e\273e\275\270\307")); //Для автоопределения
-                    my_lcdprint(lcd_buffer);
-                    else sprintf_P(lcd_buffer, PSTR("SlaveOn (Up)=%1i"), (int)SlaveON);
+                if (flAutoDetectPowerTEN)
+                    dirtyTrickSetCursor(0, 3);
+                sprintf_P(lcd_buffer, PSTR("кнoпку <BBEPX> %4uW"), Power); //кнопку <ВВЕРХ>
+                my_lcdprint(lcd_buffer);
+                dirtyTrickSetCursor(0, 2);
+                sprintf_P(lcd_buffer, PSTR("мoщнocти TЭHA,нaжaть")); //мощности ТЭНА,нажать
+                my_lcdprint(lcd_buffer);
+                sprintf_P(lcd_buffer, PSTR("Для aвтooпpeдeлeния")); //Для автоопределения
+                my_lcdprint(lcd_buffer);
+                else sprintf_P(lcd_buffer, PSTR("SlaveOn (Up)=%1i"), (int)SlaveON);
 #endif
-                }
-                break;
-            case 105: // Отбор голов33
-                //          DisplaySimpleGLV();
-                //          break;
-            case 104: // Перевый (недробный) отбор
-            case 106: // Второй дробный отбор
-            case 107: // Третий дробный отбор
-                DisplaySimpleDistill();
-                break;
+            }
+            break;
+        case 105: // Отбор голов33
+            //          DisplaySimpleGLV();
+            //          break;
+        case 104: // Перевый (недробный) отбор
+        case 106: // Второй дробный отбор
+        case 107: // Третий дробный отбор
+            DisplaySimpleDistill();
+            break;
 
-            case 117: // Фракционная перегонка
-                DisplayFracionDistill();
-                break;
+        case 117: // Фракционная перегонка
+            DisplayFracionDistill();
+            break;
 
-            case 108: // Разваривание
-            case 113: // Разваривание мучно-солодового затора (без варки).
-            case 114: // Разваривание
-                DisplayRazvar();
-                break;
-            case 109: // Ректификация
-            case 118: // Ректификация
-                DisplayRectif();
-                break;
+        case 108: // Разваривание
+        case 113: // Разваривание мучно-солодового затора (без варки).
+        case 114: // Разваривание
+            DisplayRazvar();
+            break;
+        case 109: // Ректификация
+        case 118: // Ректификация
+            DisplayRectif();
+            break;
 #ifndef TEST
 #ifndef DEBUG // Это отображение информации выкусываем, если в режиме теста, потому что не хватает памяти
 #ifndef TESTGSM
 #ifndef TESTGSM1
-            case 110: // Дистилляция с дефлегматором
-                DisplayDistDefl();
-                break;
-            case 111: // НДРФ
-                DisplayRectif();
-                break;
+        case 110: // Дистилляция с дефлегматором
+            DisplayDistDefl();
+            break;
+        case 111: // НДРФ
+            DisplayRectif();
+            break;
 #endif
 #endif
 #endif
 #endif
 
-            case 112: // NBK
-                DisplayNBK();
-                break;
+        case 112: // NBK
+            DisplayNBK();
+            break;
 
-            case 130: // Внешнее управление
-                DisplayExtContol();
-                break;
-            case 129: // тест клапанов
-                DisplayTestKLP();
-                break;
-            case 248:
-                //          sprintf_P(lcd_buffer,PSTR("LOW LEVEL VOLTS!"));
-                //          my_lcdprint(lcd_buffer);
-                //          sprintf_P(lcd_buffer,PSTR("Umax=%i Sec=%3i"),(uint16_t)MaxVoltsOut,(int) ErrCountIndex*12);
-                break;
-            case 249:
-                sprintf_P(lcd_buffer, PSTR("HET \340ETEKOPA H\251\247\261!")); //НЕТ ДЕТЕКТОРА НУЛЯ!
-                my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("Umax=%i"), (uint16_t)MaxVoltsOut);
-                break;
-            case 250:
-                sprintf_P(lcd_buffer, PSTR("PO\244\247\245B BO\340\256!")); //РОЗЛИВ ВОДЫ!
-                my_lcdprint(lcd_buffer);
-                break;
-            case 251:
-                sprintf_P(lcd_buffer, PSTR("O\254\245\240KA ds18b20!")); //ОШИБКА ds18b20!
-                my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("HOMEP ds - %i"), (int)NumErrDs18);
+        case 130: // Внешнее управление
+            DisplayExtContol();
+            break;
+        case 129: // тест клапанов
+            DisplayTestKLP();
+            break;
+        case 248:
+            //          sprintf_P(lcd_buffer,PSTR("LOW LEVEL VOLTS!"));
+            //          my_lcdprint(lcd_buffer);
+            //          sprintf_P(lcd_buffer,PSTR("Umax=%i Sec=%3i"),(uint16_t)MaxVoltsOut,(int) ErrCountIndex*12);
+            my_lcdprint(lcd_buffer, 1);
+            break;
+        case 249:
+            sprintf_P(lcd_buffer, PSTR("HET ДETEKТOPA HУЛЯ!")); //НЕТ ДЕТЕКТОРА НУЛЯ!
+            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR("Umax=%i"), (uint16_t)MaxVoltsOut);
+            my_lcdprint(lcd_buffer, 1);
+            break;
+        case 250:
+            sprintf_P(lcd_buffer, PSTR("    POЗЛИB BOДЫ!")); //РОЗЛИВ ВОДЫ!
+            my_lcdprint(lcd_buffer);
+            break;
+        case 251:
+            sprintf_P(lcd_buffer, PSTR("  OШИБKA ds18b20!")); //ОШИБКА ds18b20!
+            my_lcdprint(lcd_buffer);
+            sprintf_P(lcd_buffer, PSTR("    HOMEP ds - %i"), (int)NumErrDs18);
 
-                break;
-            case 252:
-                sprintf_P(lcd_buffer, PSTR("CPA\240OTA\247 \340AT\253\245K \241A\244A")); //СРАБОТАЛ ДАТЧИК ГАЗА!
-                my_lcdprint(lcd_buffer);
-                break;
-            case 253:
-                sprintf_P(lcd_buffer, PSTR("OC\251\254EH\245E H\250\241!")); //ОСУШЕНИЕ НПГ!
-                my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("\253\270c\273o cpa\262o\277o\272 =%i"), countAlrmNPG); //Число сработок =
-                my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 2);
-                sprintf_P(lcd_buffer, PSTR("\251po\263e\275\304 H\250\241= %i"), U_NPG); //Уровень НПГ =
-                break;
-            case 254:
-                sprintf_P(lcd_buffer, PSTR("H\250\241 \250EPE\250O\247HEH!")); //НПГ ПЕРЕПОЛНЕН!
-                my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("\253\270c\273o cpa\262o\277o\272 =%i"), countAlrmNPG); //Число сработок =
-                my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 2);
-                sprintf_P(lcd_buffer, PSTR("\251po\263e\275\304 H\250\241= %i"), U_NPG); //Уровень НПГ =
-                break;
-            }
-            // Это обычное состояние
-            //
-            if (StateNPG == 1 && DispPage == 0)
-                sprintf_P(lcd_buffer, PSTR("Ha\276o\273\275e\275\270e H\250\241...")); //Наполнение НПГ...
+            break;
+        case 252:
+            sprintf_P(lcd_buffer, PSTR("CPAБOTAЛ ДATЧИK ГAЗA")); //СРАБОТАЛ ДАТЧИК ГАЗА!
+            my_lcdprint(lcd_buffer);
+            break;
+        case 253:
+            sprintf_P(lcd_buffer, PSTR("   OCУШEHИE HПГ!")); //ОСУШЕНИЕ НПГ!
+            my_lcdprint(lcd_buffer);
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Чиcлo cpaбoтoк = %i"), countAlrmNPG); //Число сработок =
+            my_lcdprint(lcd_buffer);
+            dirtyTrickSetCursor(0, 2);
+            sprintf_P(lcd_buffer, PSTR("Уpoвeнь HПГ   = %i"), U_NPG); //Уровень НПГ =
+            my_lcdprint(lcd_buffer, 1);
+            break;
+        case 254:
+            sprintf_P(lcd_buffer, PSTR("  HПГ ПEPEПOЛHEH!")); //НПГ ПЕРЕПОЛНЕН!
+            my_lcdprint(lcd_buffer);
+            dirtyTrickSetCursor(0, 3);
+            sprintf_P(lcd_buffer, PSTR("Чиcлo cpaбoтoк = %i"), countAlrmNPG); //Число сработок =
+            my_lcdprint(lcd_buffer);
+            dirtyTrickSetCursor(0, 2);
+            sprintf_P(lcd_buffer, PSTR("Уpoвeнь HПГ   = %i"), U_NPG); //Уровень НПГ =
+            my_lcdprint(lcd_buffer, 1);
+            break;
         }
-        // Третья страница отображения универсальна, там показываем напряжение, дистанцию и возможное число ошибок
-        // расчета среднеквадратичного.
-
-        if (DispPage == 2) {
-#if USE_GSM_WIFI == 1
-            sprintf_P(lcd_buffer, PSTR("C3 %3i,w%3u,i%3i"), (int)flGPRSState, (int)timeWaitGPRS, (int)timeGPRS);
-            my_lcdprint(lcd_buffer);
-#else
-            sprintf_P(lcd_buffer, PSTR("C3 He\277 GSM \276o\343\343ep\266\272\270")); //Hет GSM поддержки
-            my_lcdprint(lcd_buffer);
-#endif
-            dtostrf((float)MaxIOut / 10, 6, 3, str_cur);
-            sprintf_P(lcd_buffer, PSTR("B\303xo\343\275o\271 I = %sA"), str_cur); //Выходной I=
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("B\303xo\343\275a\307 P =   %4iW"), FactPower); //Выходная P=
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("Bxo\343\275oe  U =    %3uV"), (uint16_t)MaxVoltsOut); //Входное U=
-        }
-        // На четвертой странице показываем всю температуру и давление
-        if (DispPage == 3) {
-            sprintf_P(lcd_buffer, PSTR("C4 Te\274\276epa\277\171pa:")); //С4 Температура:
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("ds5=%i.%i,\340a\263\273.=%i.%i"), DS_TEMP(4) / 10, DS_TEMP(4) % 10, U_MPX5010 / 10, U_MPX5010 % 10); //ds5=   ,Давл.=
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("TCA=%i.%i, ds4=%i.%i,"), DS_TEMP(TEMP_TSA) / 10, DS_TEMP(TEMP_TSA) % 10, DS_TEMP(3) / 10, DS_TEMP(3) % 10);
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("K\171\262=%i.%i,\340e\344\273=%i.%i,"), DS_TEMP(TEMP_KUB) / 10, DS_TEMP(TEMP_KUB) % 10, DS_TEMP(TEMP_DEFL) / 10, DS_TEMP(TEMP_DEFL) % 10);
-        }
-
-        // На пятой странице показываем состояние датчиков уровней                                             //Куб=   , Дефл=   ,
-        if (DispPage == 4) {
-            sprintf_P(lcd_buffer, PSTR("C5 Po\267\273\270\263 Bo\343\303= %4u"), U_VODA); //Розлив Воды=
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("A\277\274. \340a\263\273e\275\270e= %3imm"), PressAtm); //Атм. Давление=
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("\251po\263e\275\304 \241o\273o\263 = %4u"), U_GLV); //Уровень Голов =
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("\251po\263e\275\304 \263 Tape= %4u"), U_UROVEN); //Уровень в Таре=
-        }
-
-        // На шестой странице показываем состояние датчиков уровней
-        if (DispPage == 5) {
-            sprintf_P(lcd_buffer, PSTR("C6 \251po\263e\275\304 \241a\267a=%4u"), U_GAS); //Уровень Газа=
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("Mo\346\275oc\277\304 =   %4uW"), UstPwrPH1); //Мощность =
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("\275\171\273\304/ce\272.(zPS)=  %3u"), (int)zPSOut); //нуль/сек.(zPS)=
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("\253\270c\273o \276pep\303\263a\275\270\271")); //Число прерываний
-        }
-
-        // На седьмой странице показываем состояние регулятора мощности
-        if (DispPage == 6) {
-#if NUM_PHASE == 1
-            sprintf_P(lcd_buffer, PSTR(" %4i,%4i,%4iW"), UstPwrPH1, UstPwrPH2, UstPwrPH3);
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("C7 %3i,%3i,%3i %%"), KtPhase[0], KtPhase[1], KtPhase[2]);
-#else
-            sprintf_P(lcd_buffer, PSTR("C7 Z=%4u"), TicZero);
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("Bz=%3u"), (int)b_value[0]);
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("Bpe\274\307 \263\272\273.\272\273\276=%4u"), TimeOpenKLP); //Время вкл.клп.=
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Bpe\274\307 \263\272\273.BTA41=%4u"), TimeOpenTriac); //Время вкл.ВТА41=
-#endif
-        }
-
-        // На восьмой можно сменить состояние процесса.
-        if (DispPage == 7) {
-            sprintf_P(lcd_buffer, PSTR("C8 C\274e\275a \305\277a\276a")); //C8 Смена этапа
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("                    "));
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("\257\277a\276 = %i"), (int)StateMachine); //Этап =
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("\276po\345ecca:")); //процесса:
-        }
-
-        // На девятой состояние ПИД-регулятора
-        if (DispPage == 8) {
-            sprintf_P(lcd_buffer, PSTR("C9 \250\245\340-pe\264.\274o\346\275oc\277\270:")); //ПИД-рег.мощности:
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("Dt=%4i It=%4i"), Dt, It);
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("C\277apa\307 o\301.pacco\264-%4i"), OldErrOut); //Старые ош.рассог-
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Ho\263a\307 o\301.pacco\264\273-%4i"), NewErr); //Новые ош.рассогл-
-        }
-        // На Десятой странице показываем максимальные температуры за процесс температуру и давление
-        if (DispPage == 9) {
-            sprintf_P(lcd_buffer, PSTR("C10 Ma\272c.\277e\274\276epa\277\171pa")); //Макс.температура
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("ds4=%i.%i, ds5=%i.%i"), MAX_DS_TEMP(3) / 10, MAX_DS_TEMP(3) % 10, MAX_DS_TEMP(4) / 10, MAX_DS_TEMP(4) % 10);
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("ds2=%i.%i, ds3=%i.%i,"), MAX_DS_TEMP(1) / 10, MAX_DS_TEMP(1) % 10, MAX_DS_TEMP(2) / 10, MAX_DS_TEMP(2) % 10);
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("\267a \276po\345ecc: ds1=%i.%i"), MAX_DS_TEMP(0) / 10, MAX_DS_TEMP(0) % 10); //за процесс: ds1=
-        }
-        // На 11  странице показываем параметры расчета ПИД-регулятора
-        if (DispPage == 10) {
-            sprintf_P(lcd_buffer, PSTR("C11 \250\245\340-pe\264.\277e\274\276epa\277\171p\303:")); //ПИД-рег.температуры:
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 3);
-            sprintf_P(lcd_buffer, PSTR("KId %4i %4i %3i"), KtT, ItTemp, DtTemp);
-            my_lcdprint(lcd_buffer);
-            lcd.setCursor(0, 2);
-            sprintf_P(lcd_buffer, PSTR("C\277apa\307 o\301.pacco\264-%3i"), OldErrTempOut); //Старые ош.рассог-
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("Ho\263a\307 o\301.pacco\264\273-%3i"), NewErrTemp); //Новые ош.рассогл-
-        }
-
-        if (flDspDop && DispDopInfo > 0) // Если отображаем дополнительную информацию, тогда проверяем ее статус
-        {
-
-            if (BeepStateProcess > 1) {
-                if (DispDopInfo == 3 || DispDopInfo == 4) {
-                    if (!(BeepStateProcess & B00000010) && DispDopInfo == 3)
-                        my_beep(BEEP_LONG); // Не пищим, если установлена маска в 2 разряде
-                    if (!(BeepStateProcess & B00000100) && DispDopInfo == 4)
-                        my_beep(BEEP_LONG); // Не пищим, если установлена маска в 3 разряде
-                } else
-                    my_beep(BEEP_LONG); // Сначала пищим, предупреждая.
-            } else
-                my_beep(BEEP_LONG); // Сначала пищим, предупреждая.
-
-            lcd.clear();
-            lcd.setCursor(0, 2);
-            if (DispDopInfo == 1) {
-                sprintf_P(lcd_buffer, PSTR("       (%3i)"), (IspReg == 117 || IspReg == 118) ? COUNT_ALARM_UROVEN_FR - CountAlarmUroven : COUNT_ALARM_UROVEN - CountAlarmUroven);
-                my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("    CMEH\245 TAP\251!")); //СМЕНИ ТАРУ!
-            }
-            if (DispDopInfo == 2) {
-                sprintf_P(lcd_buffer, PSTR("       (%3i)"), COUNT_ALARM_VODA - CountAlarmVoda);
-                my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("   \250POTE\253KA BO\340\256!")); //ПРОТЕЧКА ВОДЫ!
-            }
-            if (DispDopInfo == 3) {
-                sprintf_P(lcd_buffer, PSTR("       %3iV"), (uint16_t)MaxVoltsOut);
-                my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR(" H\245\244KOE HA\250P\261\243EH\245E!")); //НИЗКОЕ НАПРЯЖЕНИЕ!
-            }
-            if (DispDopInfo == 6) {
-                sprintf_P(lcd_buffer, PSTR("       %3iV"), (uint16_t)MaxVoltsOut);
-                my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("B\256COKOE HA\250P\261\243EH\245E!")); //ВЫСОКОЕ НАПРЯЖЕНИЕ!
-            }
-            if (DispDopInfo == 4) {
-                sprintf_P(lcd_buffer, PSTR("      (%2i)"), (int)NumErrDs18);
-                my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("  O\254\245\240KA DS18B20!")); //ОШИБКА DS18B20!
-            }
-            if (DispDopInfo == 5) {
-                sprintf_P(lcd_buffer, PSTR("     %3i/%3i"), U_MPX5010, AlarmMPX5010);
-                my_lcdprint(lcd_buffer);
-                sprintf_P(lcd_buffer, PSTR("    \340AB\247EH\245E(!)")); //ДАВЛЕНИЕ(!)
-            }
-
-#if USE_GSM_WIFI == 1
-            // Активизируем разовую отправку состояния на сервер
-            if (FlToGSM > 1 && flGPRSState != 20 && flGPRSState != 164 && (timeGPRS == 0 || flNeedCall == 1)) {
-                if (flNeedCall == 1) {
-                    flGPRSState = 40; // Активируем звонок если в этом есть необходимость
-                } else { // Если в данный момент не производится дозвон, тогда активируем GPRS сессию.
-                    if (flNeedCall != 2)
-                        flGPRSState = 2;
-                }
-                // Активируем длительную сессию GPRS
-                flNeedRefrServer = 0;
-                timeGPRS = 250;
-            }
-#endif
-        }
-
-        lcd.setCursor(0, 1);
-        my_lcdprint(lcd_buffer);
-        break;
+        // Это обычное состояние
+        //
+        if (StateNPG == 1 && DispPage == 0)
+            sprintf_P(lcd_buffer, PSTR("Haпoлнeниe HПГ...")); //Наполнение НПГ...
+    }
+}
+void displayProcessSelector(int item)
+{
+    switch (item) {
     case 100:
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("   MEH\260 HACTPO\246K\245"), FlState); //МЕНЮ НАСТРОЙКИ
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("   MEHЮ HACTPOЙKИ"), FlState); //МЕНЮ НАСТРОЙКИ
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 101:
-        lcd.clear();
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("  PE\243\245M \250POCMOTPA")); //РЕЖИМ ПРОСМОТРА
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("  PEЖИM ПPOCMOTPA")); //РЕЖИМ ПРОСМОТРА
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 102:
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
         sprintf_P(lcd_buffer, PSTR("     TEPMOCTAT      "));
-        my_lcdprint(lcd_buffer);
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 103:
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR(" PE\241\251\247\261TOP MO\342HOCT\245")); //РЕГУЛЯТОР МОЩНОСТИ
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR(" PEГУЛЯTOP MOЩHOCTИ")); //РЕГУЛЯТОР МОЩНОСТИ
+        my_lcdprint(lcd_buffer, 1);
         break;
-    case 104:
-        sprintf_P(lcd_buffer, PSTR("       \250EPBA\261")); //ПЕРВАЯ
-        my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("    \340\245CT\245\247\247\261\341\245\261")); //ДИСТИЛЛЯЦИЯ
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("     HE\340PO\240HA\261")); //НЕДРОБНАЯ
-        my_lcdprint(lcd_buffer);
+    case 104: //20.04.21
+        sprintf_P(lcd_buffer, PSTR(" ПEPBAЯ ДИCTИЛЛЯЦИЯ")); //20.04.21 ПЕРВАЯ
+        my_lcdprint(lcd_buffer, 1);
+        //sprintf_P(lcd_buffer, PSTR("     HEДPOБHAЯ"));                               //НЕДРОБНАЯ
+        //my_lcdprint(lcd_buffer, 1);
+        //sprintf_P(lcd_buffer, PSTR("    ДИCTИЛЛЯЦИЯ"));            //ДИСТИЛЛЯЦИЯ
+        //my_lcdprint(lcd_buffer, 2);
         break;
     case 105:
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("    OT\240OP \241O\247OB")); //ОТБОР ГОЛОВ
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR(" (\240E\244 \340E\252\247E\241MATOPA)")); //(БЕЗ ДЕФЛЕГМАТОРА)
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("    OTБOP ГOЛOB")); //ОТБОР ГОЛОВ
+        my_lcdprint(lcd_buffer, 1);
+        sprintf_P(lcd_buffer, PSTR(" (БEЗ ДEФЛEГMATOPA)")); //(БЕЗ ДЕФЛЕГМАТОРА)
+        my_lcdprint(lcd_buffer, 2);
         break;
-    case 106:
-        sprintf_P(lcd_buffer, PSTR("       BTOPA\261")); //BTOPAЯ
-        my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("    \340\245CT\245\247\247\261\341\245\261")); //ДИСТИЛЛЯЦИЯ
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("      \340PO\240HA\261")); //ДРОБНАЯ
-        my_lcdprint(lcd_buffer);
+    case 106: //20.04.21
+        sprintf_P(lcd_buffer, PSTR(" BTOPAЯ ДИCTИЛЛЯЦИЯ")); //20.04.21 BTOPAЯ
+        my_lcdprint(lcd_buffer, 1);
+        //sprintf_P(lcd_buffer, PSTR("      ДPOБHAЯ"));                                //ДРОБНАЯ
+        //my_lcdprint(lcd_buffer, 1);
+        //sprintf_P(lcd_buffer, PSTR("    ДИCTИЛЛЯЦИЯ"));            //ДИСТИЛЛЯЦИЯ
+        //my_lcdprint(lcd_buffer, 2);
         break;
         //Температуру этого режима исползуется в отбре голов при дистилляции, поэтому отключаем
         //	case 107:
         //		sprintf_P(lcd_buffer, PSTR("                    "));
-        //    lcd.setCursor(0, 1);
-        //    sprintf_P(lcd_buffer, PSTR("       TPET\245\246"));                                 //ТРЕТИЙ
+        //    dirtyTrickSetCursor(0, 1);
+        //    sprintf_P(lcd_buffer, PSTR("       TPETИЙ"));                                 //ТРЕТИЙ
         //    my_lcdprint(lcd_buffer);
-        //    lcd.setCursor(0, 2);
-        //    sprintf_P(lcd_buffer, PSTR("   \340PO\240H\256\246 OT\240OP"));                     //ДРОБНЫЙ ОТБОР
-        //    my_lcdprint(lcd_buffer);
+        //    dirtyTrickSetCursor(0, 2);
+        //    sprintf_P(lcd_buffer, PSTR("   ДPOБHЫЙ OTБOP"));                     //ДРОБНЫЙ ОТБОР
+        //    my_lcdprint(lcd_buffer, 1);
         //		break;
     case 108:
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("   \244ATOP \244EPHOBO\246")); //ЗАТОР ЗЕРНОВОЙ
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("   ЗATOP ЗEPHOBOЙ")); //ЗАТОР ЗЕРНОВОЙ
+        my_lcdprint(lcd_buffer, 1);
+        sprintf_P(lcd_buffer, PSTR("  с  развариванием")); //24.04.21
+        my_lcdprint(lcd_buffer, 2);
+
         break;
     case 109:
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("    PEKT\245\252\245KA\341\245\261")); //РЕКТИФИКАЦИЯ
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("    PEKTИФИKAЦИЯ")); //РЕКТИФИКАЦИЯ
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 110: // Дистилляция с дефлегматором
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("    \340\245CT\245\247\247\261\341\245\261")); //ДИСТИЛЛЯЦИЯ
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("  C \340E\252\247E\241MATOPOM")); //С ДЕФЛЕГМАТОРОМ
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("    ДИCTИЛЛЯЦИЯ")); //ДИСТИЛЛЯЦИЯ
+        my_lcdprint(lcd_buffer, 1);
+        sprintf_P(lcd_buffer, PSTR("  C ДEФЛEГMATOPOM")); //С ДЕФЛЕГМАТОРОМ
+        my_lcdprint(lcd_buffer, 2);
         break;
-    case 111: // НДРФ
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("     HE\340PO\240HA\261")); //НЕДРОБНАЯ
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("    PEKT\245\252\245KA\341\245\261")); //РЕКТИФИКАЦИЯ
-        my_lcdprint(lcd_buffer);
+    case 111: // НДРФ 20.04.21
+        sprintf_P(lcd_buffer, PSTR("        HДРФ")); //20.04.21 НЕДРОБНАЯ
+        my_lcdprint(lcd_buffer, 1);
+        //sprintf_P(lcd_buffer, PSTR("    PEKTИФИKAЦИЯ"));                    //РЕКТИФИКАЦИЯ
+        //my_lcdprint(lcd_buffer, 2);
         break;
     case 112: // НБК
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("    HE\250PEP\256BHA\261")); //НЕПРЕРЫВНАЯ
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("  \240PA\243HA\261 KO\247OHHA")); //БРАЖНАЯ КОЛОННА
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("    HEПPEPЫBHAЯ")); //НЕПРЕРЫВНАЯ
+        my_lcdprint(lcd_buffer, 1);
+        sprintf_P(lcd_buffer, PSTR("  БPAЖHAЯ KOЛOHHA")); //БРАЖНАЯ КОЛОННА
+        my_lcdprint(lcd_buffer, 2);
         break;
     case 113: // солодо-мучной затор (без варки
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("  \244ATOP CO\247O\340-M\251KA")); //ЗАТОР СОЛОД-МУКА
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("    (\240E\244 BAPK\245)"), PowerRect); //(БЕЗ ВАРКИ)
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("  ЗATOP COЛOД-MУKA")); //ЗАТОР СОЛОД-МУКА
+        my_lcdprint(lcd_buffer, 1);
+
+        sprintf_P(lcd_buffer, PSTR("  без разваривания")); //24.04.21 (БЕЗ ВАРКИ)
+        my_lcdprint(lcd_buffer, 2);
         break;
     case 114: // Охлаждение затора
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("     OX\247A\243\340EH\245E")); //ОХЛАЖДЕНИЕ
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR(" \244ATOPA C \253\245\247\247EPOM"), PowerRect); //ЗАТОРА С ЧИЛЛЕРОМ
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("     OXЛAЖДEHИE")); //ОХЛАЖДЕНИЕ
+        my_lcdprint(lcd_buffer, 1);
+
+        sprintf_P(lcd_buffer, PSTR(" ЗATOPA C ЧИЛЛEPOM"), PowerRect); //ЗАТОРА С ЧИЛЛЕРОМ
+        my_lcdprint(lcd_buffer, 2);
         break;
     case 115: // Таймер
-        lcd.clear();
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR(" PE\241\251\247\261TOP MO\342HOCT\245")); //РЕГУЛЯТОР МОЩНОСТИ
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR(" + TA\246MEP OTK\247\260\253EH\245\261")); //+ ТАЙМЕР ОТКЛЮЧЕНИЯ
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR(" PEГУЛЯTOP MOЩHOCTИ")); //РЕГУЛЯТОР МОЩНОСТИ
+        my_lcdprint(lcd_buffer, 1);
+
+        sprintf_P(lcd_buffer, PSTR(" + TAЙMEP OTKЛЮЧEHИЯ")); //+ ТАЙМЕР ОТКЛЮЧЕНИЯ
+        my_lcdprint(lcd_buffer, 2);
         break;
     case 116: // Варка пива
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("    \250\245BOBAPEH\245E")); //ПИВОВАРЕНИЕ
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("    ПИBOBAPEHИE")); //ПИВОВАРЕНИЕ
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 117: // Фракционная дистилляция
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("    \252PAK\341\245OHHA\261")); //ФРАКЦИОННАЯ
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("    \340\245CT\245\247\247\261\341\245\261")); //ДИСТИЛЛЯЦИЯ
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("    ФPAKЦИOHHAЯ")); //ФРАКЦИОННАЯ
+        my_lcdprint(lcd_buffer, 1);
+
+        sprintf_P(lcd_buffer, PSTR("    ДИCTИЛЛЯЦИЯ")); //ДИСТИЛЛЯЦИЯ
+        my_lcdprint(lcd_buffer, 2);
         break;
     case 118: // Фракционная ректификация
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("    \252PAK\341\245OHHA\261")); //ФРАКЦИОННАЯ
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("    PEKT\245\252\245KA\341\245\261")); //РЕКТИФИКАЦИЯ
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("    ФPAKЦИOHHAЯ")); //ФРАКЦИОННАЯ
+        my_lcdprint(lcd_buffer, 1);
+
+        sprintf_P(lcd_buffer, PSTR("    PEKTИФИKAЦИЯ")); //РЕКТИФИКАЦИЯ
+        my_lcdprint(lcd_buffer, 2);
         break;
     case 130:
-        lcd.clear();
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("      BHE\254HEE")); //ВНЕШНЕЕ
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("     \251\250PAB\247EH\245E")); //УПРАВЛЕНИЕ
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("      BHEШHEE")); //ВНЕШНЕЕ
+        my_lcdprint(lcd_buffer, 1);
+
+        sprintf_P(lcd_buffer, PSTR("     УПPABЛEHИE")); //УПРАВЛЕНИЕ
+        my_lcdprint(lcd_buffer, 2);
         break;
     case 129:
-        sprintf_P(lcd_buffer, PSTR("                    "));
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("       PE\243\245M")); //РЕЖИМ
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR(" TECTA KOHTPO\247\247EPA")); //ТЕСТА КОНТРОЛЛЕРА
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("       PEЖИM")); //РЕЖИМ
+        my_lcdprint(lcd_buffer, 1);
+
+        sprintf_P(lcd_buffer, PSTR(" TECTA KOHTPOЛЛEPA")); //ТЕСТА КОНТРОЛЛЕРА
+        my_lcdprint(lcd_buffer, 2);
         break;
-    case 200:
-        sprintf_P(lcd_buffer, PSTR("Te\274\276epa\277\171pa o\277\272\273\306\300.")); //Температура отключ.
+    default:
+        break;
+    }
+}
+void displaySettings(int item)
+{
+    int j;
+
+    switch (item) {
+        // Настройки
+        //--------------------------------------------------------------------------------------------------------------------
+    case 200: //15.04.21
+        sprintf_P(lcd_buffer, PSTR("     ТЕРМОСТАТ:")); //15.04.21 Температура
+        my_lcdprint(lcd_buffer, 0);
+
+        sprintf_P(lcd_buffer, PSTR("Целевая тeмпepaтуpa")); //15.04.21 отключения
+        my_lcdprint(lcd_buffer, 1);
+
+        sprintf_P(lcd_buffer, PSTR("тepмocтaтa = %i.%i \337С"), TempTerm / 10, TempTerm % 10); //термостата =
+        dirtyTrickSetCursor(0, 2);
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\277ep\274oc\277a\277a = %i.%i"), TempTerm / 10, TempTerm % 10);
-        lcd.setCursor(0, 1); //термостата =
-        my_lcdprint(lcd_buffer);
+
         break;
     case 201:
-        sprintf_P(lcd_buffer, PSTR("\251CTAHOB\247EH T\257H")); //УСТАНОВЛЕН ТЭН
+        sprintf_P(lcd_buffer, PSTR("   Установлен TЭH   ")); //2.04.21 УСТАНОВЛЕН ТЭН
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("Mo\346\275oc\277\304\306 =%5uW"), Power); //Мощностью =
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR(" мoщнocтью = %5uW"), Power); //Мощностью =
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 202:
-        sprintf_P(lcd_buffer, PSTR("\244A\340AHHA\261 MO\342HOCT\304")); //ЗАДАННАЯ МОЩНОСТЬ
+        sprintf_P(lcd_buffer, PSTR("РЕГУЛЯТОР МОЩНОСТИ:")); //2.04.21 ЗАДАННАЯ МОЩНОСТЬ
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("HA\241PEBA =%5uW"), UstPowerReg); //НАГРЕВА =
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR(" Заданная мощность")); //2.04.21 ЗАДАННАЯ МОЩНОСТЬ
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
+
+        sprintf_P(lcd_buffer, PSTR(" нагрева = %5uW"), UstPowerReg); //2.04.21 НАГРЕВА =
+        dirtyTrickSetCursor(0, 2);
+        my_lcdprint(lcd_buffer);
+
         break;
     case 203:
-        sprintf_P(lcd_buffer, PSTR("\250APAMETP USART = %u"), FlToUSART); //ПАРАМЕТР USART =
+        sprintf_P(lcd_buffer, PSTR("ПAPAMETP USART = %u"), FlToUSART); //ПАРАМЕТР USART =
         my_lcdprint(lcd_buffer);
         break;
     case 204:
-        sprintf_P(lcd_buffer, PSTR("\250APAMETP GSM=%u"), FlToGSM); //ПАРАМЕТР GSM=
+        sprintf_P(lcd_buffer, PSTR("ПAPAMETP GSM=%u"), FlToGSM); //ПАРАМЕТР GSM=
         my_lcdprint(lcd_buffer);
         if (FlToGSM == 1 || FlToGSM == 0)
             sprintf_P(lcd_buffer, PSTR("GSM (SMS)"));
@@ -1900,713 +2140,801 @@ void DisplayData() //************ РЕЖИМ ПРОСМОТРА ****************
             sprintf_P(lcd_buffer, PSTR("Android int"));
         if (FlToGSM > 12)
             sprintf_P(lcd_buffer, PSTR("Err! 0..11 (%i)"), (int)FlToGSM);
-        lcd.setCursor(0, 1);
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 205:
-        sprintf_P(lcd_buffer, PSTR("\340E\247\304TA \277e\274\276epa\277\171p\303")); //ДЕЛЬТА температуры
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("ДEЛьTA тeмпepaтуpы")); //ДЕЛЬТА температуры
+        my_lcdprint(lcd_buffer, 0);
+
+        sprintf_P(lcd_buffer, PSTR("в peжимe TEPMOCTATA")); //в режиме ТЕРМОСТАТА
+        my_lcdprint(lcd_buffer, 1);
+
+        sprintf_P(lcd_buffer, PSTR("  и пpи paзгoнe в")); //и при разгоне в
+        my_lcdprint(lcd_buffer, 2);
+
         if (Delta <= 0)
             Delta = 0;
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("\250\245BOBAPEH\245\245 = %i.%i"), Delta / 10, abs(Delta % 10)); //ПИВОВАРЕНИИ =
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("\270 \276p\270 pa\267\264o\275e \263")); //и при разгоне в
-        my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\263 pe\266\270\274e TEPMOCTATA")); //в режиме ТЕРМОСТАТА
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("ПИBOBAPEHИИ = %i.%i \337С"), Delta / 10, abs(Delta % 10)); //10.04.21 ПИВОВАРЕНИИ =
+        my_lcdprint(lcd_buffer, 3);
+
         break;
     case 206:
-        sprintf_P(lcd_buffer, PSTR("  \250EPBA\261 HE\340PO\240HA\261")); //ПЕРВАЯ НЕДРОБНАЯ
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("\343\270c\277\270\273\273\307\345\270\270 = %i.%i"), Temp1P / 10, Temp1P % 10);
-        my_lcdprint(lcd_buffer); //дистилляции =
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("Te\274\276-pa \263 K\171\262e o\272o\275\300")); //Темп-ра в Кубе оконч
-        my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("    \340\245CT\245\247\247\261\341\245\261:")); //ДИСТИЛЛЯЦИЯ:
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR(" ПEPBAЯ ДИCTИЛЛЯЦИЯ")); //ПЕРВАЯ НЕДРОБНАЯ
+        my_lcdprint(lcd_buffer, 0);
+
+        sprintf_P(lcd_buffer, PSTR(" Температура в Кубе")); //ДИСТИЛЛЯЦИЯ:
+        my_lcdprint(lcd_buffer, 1);
+
+        sprintf_P(lcd_buffer, PSTR("     oкoнчания")); //3.04.21 Темп-ра в Кубе оконч
+        my_lcdprint(lcd_buffer, 2);
+
+        sprintf_P(lcd_buffer, PSTR("диcтилляции = %i.%i\337С"), Temp1P / 10, Temp1P % 10); //10.04.21
+        my_lcdprint(lcd_buffer, 3);
         break;
     case 207:
-        sprintf_P(lcd_buffer, PSTR("   BTOPA\261 \340PO\240HA\261")); //ВТОРАЯ ДРОБНАЯ
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("\343\270c\277\270\273\273\307\345\270\270 = %i.%i"), Temp2P / 10, Temp2P % 10); //дистилляции =
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("Te\274\276-pa \263 K\171\262e o\272o\275\300")); //Темп-ра в Кубе оконч
-        my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("    \340\245CT\245\247\247\261\341\245\261:")); //ДИСТИЛЛЯЦИЯ:
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR(" BTOPAЯ ДИCTИЛЛЯЦИЯ")); //ВТОРАЯ ДРОБНАЯ
+        my_lcdprint(lcd_buffer, 0);
+
+        sprintf_P(lcd_buffer, PSTR(" Температура в Кубе")); //ДИСТИЛЛЯЦИЯ:
+        my_lcdprint(lcd_buffer, 1);
+
+        sprintf_P(lcd_buffer, PSTR("     oкoнчания")); //3.04.21 Темп-ра в Кубе оконч
+        my_lcdprint(lcd_buffer, 2);
+
+        sprintf_P(lcd_buffer, PSTR("диcтилляции =%i.%i\337С"), Temp2P / 10, Temp2P % 10); //10.04.21 дистилляции =
+        my_lcdprint(lcd_buffer, 3);
+
         break;
     case 208:
-        //		sprintf_P(lcd_buffer, PSTR("   TPET\304\261 \340PO\240HA\261"));                               //ТРЕТЬЯ ДРОБНАЯ
+        //		sprintf_P(lcd_buffer, PSTR("   TPETьЯ ДPOБHAЯ"));                               //ТРЕТЬЯ ДРОБНАЯ
         //    my_lcdprint(lcd_buffer);
-        //    lcd.setCursor(0, 3);
-        //    sprintf_P(lcd_buffer, PSTR("\343\270c\277\270\273\273\307\345\270\270 = %i.%i"), Temp3P/10, Temp3P%10); //дистилляции =
+        //    dirtyTrickSetCursor(0, 3);
+        //    sprintf_P(lcd_buffer, PSTR("диcтилляции =%i.%i\337С"), Temp3P/10, Temp3P%10); //10.04.21 дистилляции =
         //    my_lcdprint(lcd_buffer);
-        //    lcd.setCursor(0, 2);
-        //    sprintf_P(lcd_buffer, PSTR("Te\274\276-pa \263 K\171\262e o\272o\275\300"));                   //Темп-ра в Кубе оконч
+        //    dirtyTrickSetCursor(0, 2);
+        //    sprintf_P(lcd_buffer, PSTR("Teмп-pa oкoнчания"));                   //3.04.21 Темп-ра в Кубе оконч
         //    my_lcdprint(lcd_buffer);
-        //    sprintf_P(lcd_buffer, PSTR("    \340\245CT\245\247\247\261\341\245\261:"));                    //ДИСТИЛЛЯЦИЯ:
+        //    sprintf_P(lcd_buffer, PSTR("    ДИCTИЛЛЯЦИЯ:"));                    //ДИСТИЛЛЯЦИЯ:
         //    my_lcdprint(lcd_buffer);
         //		break;
-        sprintf_P(lcd_buffer, PSTR("  OT\240OP \241O\247OB \250P\245")); //ОТБОР ГОЛОВ ПРИ
+        sprintf_P(lcd_buffer, PSTR("  OTБOP ГOЛOB ПPИ")); //ОТБОР ГОЛОВ ПРИ
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("o\277\262opa = %i.%i"), Temp3P / 10, Temp3P % 10); //отбора =
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("oтбopa = %i.%i \337С"), Temp3P / 10, Temp3P % 10); //10.04.21 отбора =
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("Te\274\276-pa \263 K\171\262e o\272o\275\300")); //Темп-ра в Кубе оконч
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("Teмп-pa oкoнчания")); //3.04.21 Темп-ра в Кубе оконч
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("    \340\245CT\245\247\247\261\341\245\245:")); //ДИСТИЛЛЯЦИИ:
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("    ДИCTИЛЛЯЦИИ:")); //ДИСТИЛЛЯЦИИ:
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 209:
-        sprintf_P(lcd_buffer, PSTR("PEKT\245\252\245KA\341\245\261 PA\244\241OH")); //РЕКТИФИКАЦИЯ РАЗГОН
+        sprintf_P(lcd_buffer, PSTR("(PEKT)  Температура")); //6.05.21 РЕКТИФИКАЦИЯ РАЗГОН
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("(+)K\171\262, (-)Ko\273o\275\275a")); //(+)Куб, (-)Колонна
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("pa\267\264o\275a = %i.%i"), tEndRectRazgon / 10, abs(tEndRectRazgon % 10)); //разгона =
-        my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("Te\274\276ep-pa o\272o\275\300a\275\270\307")); //Темпер-ра окончания
-        my_lcdprint(lcd_buffer);
+
+        sprintf_P(lcd_buffer, PSTR("(+)Куб, (-)Koлoннa")); //(+)Куб, (-)Колонна
+        my_lcdprint(lcd_buffer, 3);
+
+        sprintf_P(lcd_buffer, PSTR("    Т = %i.%i \337С"), tEndRectRazgon / 10, abs(tEndRectRazgon % 10)); //6.05.21 разгона =
+        my_lcdprint(lcd_buffer, 2);
+
+        sprintf_P(lcd_buffer, PSTR("oкoнчaния РАЗГОНА")); //6.05.21 Темпер-ра окончания
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 210:
-        sprintf_P(lcd_buffer, PSTR("PEKT\245\252\245KA\341\245\261")); //РЕКТИФИКАЦИЯ
+        sprintf_P(lcd_buffer, PSTR("(PEKT)  Заданная")); //6.05.21 РЕКТИФИКАЦИЯ
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\274o\346\275oc\277\304 = %3iW"), PowerRect); //мощность =
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("\250o\343a\263ae\274a\307")); //Подаваемая
-        my_lcdprint(lcd_buffer);
+
+        sprintf_P(lcd_buffer, PSTR("     Р = %3iW"), PowerRect); //6.05.21 мощность =
+        my_lcdprint(lcd_buffer, 2);
+
+        sprintf_P(lcd_buffer, PSTR("  МОЩНОСТь нагрева")); //6.05.21 Подаваемая
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 211:
-        sprintf_P(lcd_buffer, PSTR("\340AT\253\245K\245 TEM\250EPAT\251P\256")); //ДАТЧИКИ ТЕМПЕРАТУРЫ
+        sprintf_P(lcd_buffer, PSTR("ДATЧИKИ TEMПEPATУPЫ")); //ДАТЧИКИ ТЕМПЕРАТУРЫ
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\263\263o\343 \276o\276pa\263o\272")); //ввод поправок
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("   Ввoд пoпpaвoк")); //ввод поправок
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("    для DS18B20")); //15.04.21
+        dirtyTrickSetCursor(0, 2);
+        my_lcdprint(lcd_buffer);
+
         break;
     case 212:
-        sprintf_P(lcd_buffer, PSTR("(PEKT)OT\240OP \241O\247OB:")); //(РЕКТ)ОТБОР ГОЛОВ:
+        sprintf_P(lcd_buffer, PSTR("(PEKT) OTБOP ГOЛOB:")); //(РЕКТ)ОТБОР ГОЛОВ:
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("\275a\300.o\277\262op TE\247A= %i.%i"), tEndRectOtbGlv / 10, tEndRectOtbGlv % 10);
-        my_lcdprint(lcd_buffer); //нач.отбор ТЕЛА =
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("\267a\272a\275\300.o\277\262op \241O\247OB \270")); //заканч.отбор ГОЛОВ и
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("ГOЛOB = %i.%i \337С"), tEndRectOtbGlv / 10, tEndRectOtbGlv % 10); //10.04.21 нач.отбор ТЕЛА =
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("Te\274\276-pa \263 K\171\262e \272o\264\343a")); //Темп-ра в Кубе когда
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("окончания   oтбopа")); //9.04.21 заканч.отбор ГОЛОВ и
         my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("Teмпературa в Кубe")); //9.04.21 Темп-ра в Кубе когда
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 213:
-        sprintf_P(lcd_buffer, PSTR("(PEKT)\254\245M OT\240OPA")); //(РЕКТ)ШИМ ОТБОРА
+        sprintf_P(lcd_buffer, PSTR("(PEKT)  ШИM OTБOPA")); //(РЕКТ)ШИМ ОТБОРА
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("\276p\270 o\277\262ope \241O\247OB")); //при отборе ГОЛОВ
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("  клапана   ГOЛOB")); //3.04.21 при отборе ГОЛОВ
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("\250ep\270o\343 o\277\272p\303\277\270\307 \272\273a\276.")); //Период открытия клап.
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("  Пepиoд oткpытия")); //3.04.21 Период открытия клап.
         my_lcdprint(lcd_buffer);
-        dtostrf((float)timeChimRectOtbGlv / 100, 3, 1, str_temp);
-        sprintf_P(lcd_buffer, PSTR("\241O\247OB = %s(ce\272.)"), str_temp);
-        my_lcdprint(lcd_buffer); //ГОЛОВ = 234.3 (сек.)
+        dtostrf((float)timeChimRectOtbGlv / 100, 3, 1, str_temp); //3.04.21
+        sprintf_P(lcd_buffer, PSTR("ГOЛOB = %s ceк"), str_temp);
+        my_lcdprint(lcd_buffer, 1); //ГОЛОВ = 234.3 (сек.)
         break;
     case 214:
-        sprintf_P(lcd_buffer, PSTR("(PEKT)\250PO\341EHT \254\245M")); //(РЕКТ)ПРОЦЕНТ ШИМ
+        sprintf_P(lcd_buffer, PSTR("(PEKT)  ПPOЦEHT ШИM")); //(РЕКТ)ПРОЦЕНТ ШИМ
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("(-)10=0,1ce\272-\272\273.o\277\272p")); //(-)10=0,1сек-кл.откр
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("(-)100=1ceк кл. oткp")); //(-)10=0,1сек-кл.откр
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("(+)10=10%%o\277\272,90%%\267a\272p")); //(+)10=10%откр,90%закр
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("(+)10=10%%oтк,90%%зaкp")); //(+)10=10%откр,90%закр
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("OT\240OPA \241O\247OB = %3i"), (int)ProcChimOtbGlv); //ОТБОРА ГОЛОВ =
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("OTБOPA ГOЛOB = %3i%%"), (int)ProcChimOtbGlv); //6.05.21 ОТБОРА ГОЛОВ =
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 215:
-        sprintf_P(lcd_buffer, PSTR("(PEKT)\254\245M OT\240OPA")); //(РЕКТ)ШИМ ОТБОРА
+        sprintf_P(lcd_buffer, PSTR("(PEKT)  ШИM OTБOPA")); //(РЕКТ)ШИМ ОТБОРА
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("o\277\262opa CP (ce\272.)")); //отбора СР (сек.)
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("  клапана  СПИРТА")); //3.04.21 отбора СР (сек.)
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("\250ep\270o\343 o\277\272p\303\277\270\307 \272\273a\276.")); //Период открытия клап.
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("  Период oткpытия")); //3.04.21 Период открытия клап.
         my_lcdprint(lcd_buffer);
         dtostrf((float)timeChimRectOtbSR / 100, 3, 1, str_temp);
-        sprintf_P(lcd_buffer, PSTR("C\250\245PTA:\250ep\270o\343= %s"), str_temp);
+        sprintf_P(lcd_buffer, PSTR("CПИPTA: = %s сек"), str_temp); //3.04.21 СПИРТА:Период =  (сек.)
+        my_lcdprint(lcd_buffer, 1);
+        break;
+    case 216: // 2.04.21
+        sprintf_P(lcd_buffer, PSTR("(PEKT) OTБOP CПИPTA:")); //(РЕКТ)ОТБОР СПИРТА:
         my_lcdprint(lcd_buffer);
-        break; //СПИРТА:Период =  (сек.)
-    case 216:
-        sprintf_P(lcd_buffer, PSTR("(PEKT)OT\240OP C\250\245PTA:")); //(РЕКТ)ОТБОР СПИРТА:
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("CTO\250 \270 \275a\267a\343 \272 Tc\277a\262")); //СТОП и назал к Тстаб
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("\250p\270 \331 Tc\277a\262.+\340e\273\304\277a=")); //При(стр.вверх) Тстаб.+Дельта=
-        my_lcdprint(lcd_buffer);
+        //dirtyTrickSetCursor(0, 3);
+        //sprintf_P(lcd_buffer, PSTR("CTOП и нaзaд к Tcтaб"));                   //СТОП и назал к Тстаб
+        //my_lcdprint(lcd_buffer);
+        //dirtyTrickSetCursor(0, 2);
+        //sprintf_P(lcd_buffer, PSTR("Пpи \331 Tcтaб.+Дeльтa="));                //При(стр.вверх) Тстаб.+Дельта=
+        //my_lcdprint(lcd_buffer);
         if (tDeltaRect <= 0)
             tDeltaRect = 0;
-        sprintf_P(lcd_buffer, PSTR("\340e\273\304\277a \277e\274\276ep.= %i.%i"), tDeltaRect / 10, abs(tDeltaRect % 10));
+        sprintf_P(lcd_buffer, PSTR("Дeльтa тeмпературы")); //12.04.21 Дельта темпер. =
+        my_lcdprint(lcd_buffer, 1);
+        sprintf_P(lcd_buffer, PSTR("в царге = %i.%i \337C"), tDeltaRect / 10, abs(tDeltaRect % 10)); //12.04.21 Дельта темпер. =
+        dirtyTrickSetCursor(0, 2);
         my_lcdprint(lcd_buffer);
-        break; //Дельта темпер. =
-    case 217:
-        sprintf_P(lcd_buffer, PSTR("(PEKT)OT\240OP C\250\245PTA:")); //(РЕКТ)ОТБОР СПИРТА:
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("\275a\300\270\275.o\277\262op XBOCTOB")); //начин.отбор ХВОСТОВ
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("Te\274\276-pa \263 K\171\262e \272o\264\343a")); //Темп-ра в Кубе когда
-        my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("Te\274\276.o\272o\275\300a\275\270\307 =%i.%i"), tEndRectOtbSR / 10, tEndRectOtbSR % 10);
-        my_lcdprint(lcd_buffer); //Темп.окончания =
+
         break;
-    case 218:
-        sprintf_P(lcd_buffer, PSTR("(PEKT)OKOH\253AH\245E:")); //(РЕКТ)ОКОНЧАНИЕ:
+    case 217: // 2.04.21///////
+        sprintf_P(lcd_buffer, PSTR("(PEKT) OTБOP CПИPTA:")); //(РЕКТ)ОТБОР СПИРТА:
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("\267a\272a\275\300.pe\272\277\270\344\270\272a\345\270\307")); //заканч.ректификация
+
+        sprintf_P(lcd_buffer, PSTR(" Teмпературa в Кубe")); //5.05.21 Темп-ра в Кубе когда //Температура в кубе окончания отбора
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("Te\274\276-pa \263 K\171\262e \272o\264\343a")); //Темп-ра в Кубе когда
+        sprintf_P(lcd_buffer, PSTR("  окончания отбора")); //5.05.21 начин.отбор ХВОСТОВ
+        dirtyTrickSetCursor(0, 2);
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("Te\274\276.o\272o\275\300a\275\270\307 =%i.%i"), tEndRect / 10, tEndRect % 10);
+        sprintf_P(lcd_buffer, PSTR("  СПИРТА = %i.%i \337С"), tEndRectOtbSR / 10, tEndRectOtbSR % 10); //5.05.21 Темп.окончания =
+        dirtyTrickSetCursor(0, 3);
         my_lcdprint(lcd_buffer);
-        break; //Темп.окончания =
+        break;
+    case 218: //3.04.21
+        sprintf_P(lcd_buffer, PSTR("(PEKT) OKOHЧAHИE:")); //(РЕКТ)ОКОНЧАНИЕ:
+        my_lcdprint(lcd_buffer);
+
+        sprintf_P(lcd_buffer, PSTR(" Teмпературa в Кубe")); //5.05.21 Темп-ра в Кубе когда
+        dirtyTrickSetCursor(0, 1);
+        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("     окончания")); //5.05.21 Темп-ра в Кубе когда
+        dirtyTrickSetCursor(0, 2);
+        my_lcdprint(lcd_buffer);
+
+        sprintf_P(lcd_buffer, PSTR("ректификации =%i.%i\337С"), tEndRect / 10, tEndRect % 10); //5.05.21 Темп.окончания =
+        dirtyTrickSetCursor(0, 3);
+        my_lcdprint(lcd_buffer);
+
+        break;
     case 250:
-        sprintf_P(lcd_buffer, PSTR("PEKT\245\252\245KA\341\245\261")); //РЕКТИФИКАЦИЯ
+        sprintf_P(lcd_buffer, PSTR("(PEKT)  ШИM OTБOPA")); //6.05.21 РЕКТИФИКАЦИЯ
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("c\276\270p\277a = %2i"), minProcChimOtbSR); //спирта =
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("   cпиpтa = %2i%%"), minProcChimOtbSR); //3.04.21  спирта =
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("\254\245M o\277\262opa")); //ШИМ отбора
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("    ШИM oтбopa")); //ШИМ отбора
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("M\270\275\270\274a\273\304\275\303\271 \276po\345e\275\277")); //Минимальный процент
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("Mинимaльный пpoцeнт")); //Минимальный процент
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 251:
-        sprintf_P(lcd_buffer, PSTR("PEKT\245\252\245KA\341\245\261")); //РЕКТИФИКАЦИЯ
+        sprintf_P(lcd_buffer, PSTR("(PEKT)Редактирование")); //6.05.21 РЕКТИФИКАЦИЯ
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
+        dirtyTrickSetCursor(0, 3);
         dtostrf((float)tStabSR / 10, 2, 1, str_temp);
-        sprintf_P(lcd_buffer, PSTR("\272o\273o\275\275\303 = %s"), str_temp); //колонны =
+        sprintf_P(lcd_buffer, PSTR("  кoлoнны = %s \337С"), str_temp); //10.04.21 колонны =
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("c\277a\262\270\273\270\267a\345\270\270")); //стабилизации
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("    cтaбилизaции")); //стабилизации
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("Pe\343a\272\277\270po\263a\275\270e \277e\274\276.")); //Редактирование темп.
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("    тeмпературы")); //6.05.21  Редактирование темп.
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 252:
-        sprintf_P(lcd_buffer, PSTR("PEKT\245\252\245KA\341\245\261:")); //РЕКТИФИКАЦИЯ
+        sprintf_P(lcd_buffer, PSTR("(PEKT)  ШИM OTБOPA")); //6.05.21 РЕКТИФИКАЦИЯ
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("c\276\270p\277a = %2i"), begProcChimOtbSR); //спирта =
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("   cпиpтa = %2i%%"), begProcChimOtbSR); //3.04.21 спирта =
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("\254\245M o\277\262opa")); //ШИМ отборa
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("    ШИM oтбopa")); //ШИМ отборa
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("Ha\300a\273\304\275\303\271 \276po\345e\275\277"), begProcChimOtbSR);
-        my_lcdprint(lcd_buffer); //Начальный процент
+        sprintf_P(lcd_buffer, PSTR("Haчaльный пpoцeнт"));
+        my_lcdprint(lcd_buffer, 1); //Начальный процент
         break;
-    case 253:
-        sprintf_P(lcd_buffer, PSTR("\250o\276p-\272a MPX5010=%i.%i"), P_MPX5010 / 10, abs(P_MPX5010 % 10)); //Попр-ка MPX5010=
+    case 253: //13.04.21
+        sprintf_P(lcd_buffer, PSTR("Поправка Д. Давления"));
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("                    "));
+        sprintf_P(lcd_buffer, PSTR("MPX5010     = %i.%imm"), U_MPX5010 / 10, abs(U_MPX5010 % 10)); //13.0.4.21 Текущ.значение=
+        my_lcdprint(lcd_buffer, 1);
+
+        //sprintf_P(lcd_buffer, PSTR("Поправка    = %i.%imm"), P_MPX5010/10, abs(P_MPX5010 % 10));//13.04.21 Попр-ка MPX5010= P_MPX5010 / 10, abs(P_MPX5010 % 10));/24.04.21
+        dtostrf((float)P_MPX5010 / 10, 2, 1, str_popr); //24.04.21
+        sprintf_P(lcd_buffer, PSTR("Поправка    = %smm"), str_popr); //24.04.21
+
+        dirtyTrickSetCursor(0, 2);
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2); //Знач.с попр-ой=
-        sprintf_P(lcd_buffer, PSTR("\244\275a\300.c \276o\276p-o\271=%i.%i"), U_MPX5010 / 10, U_MPX5010 % 10 + P_MPX5010 / 10, P_MPX5010 % 10);
+
+        sprintf_P(lcd_buffer, PSTR("С пoпpавкoй = %i.%imm"), (U_MPX5010 + P_MPX5010) / 10, abs(U_MPX5010 + P_MPX5010) % 10); //13.04.21 Знач.с попр-ой= U_MPX5010 / 10, U_MPX5010 % 10 + P_MPX5010 / 10, P_MPX5010 % 10)
+        dirtyTrickSetCursor(0, 3);
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("Te\272\171\346.\267\275a\300e\275\270e=%i.%i"), U_MPX5010 / 10, U_MPX5010 % 10);
-        my_lcdprint(lcd_buffer); //Текущ.значение=
+
         break;
     case 219:
-        sprintf_P(lcd_buffer, PSTR("MO\342HOCT\304 OT\240OPA ")); //МОЩНOCТЬ ОТБОРА
+        sprintf_P(lcd_buffer, PSTR("  MOЩHOCTь OTБOPA")); //МОЩНOCТЬ ОТБОРА
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\343\270c\277\270\273\273\307\345\270\270 = %4iW"), PowerGlvDistil); //дистилляции =
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("\241O\247OB \276p\270 \276poc\277o\271")); //ГОЛОВ при простой
-        my_lcdprint(lcd_buffer);
+
+        sprintf_P(lcd_buffer, PSTR("диcтилляции = %4iW"), PowerGlvDistil); //дистилляции =
+        my_lcdprint(lcd_buffer, 2);
+
+        sprintf_P(lcd_buffer, PSTR(" ГOЛOB пpи пpocтoй")); //ГОЛОВ при простой
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 220:
-        sprintf_P(lcd_buffer, PSTR("MO\342HOCT\304 OT\240OPA TE\247A")); //МОЩНОСТЬ ОТБОРА ТЕЛА
+        sprintf_P(lcd_buffer, PSTR("MOЩHOCTь OTБOPA TEЛA")); //МОЩНОСТЬ ОТБОРА ТЕЛА
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\343\270c\277\270\273\273\307\345\270\270 = %4iW"), PowerDistil); //дистилляции =
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("\276p\270 \276poc\277o\271")); //при простой
-        my_lcdprint(lcd_buffer);
+
+        sprintf_P(lcd_buffer, PSTR("диcтилляции = %4iW"), PowerDistil); //дистилляции =
+        my_lcdprint(lcd_buffer, 2);
+
+        sprintf_P(lcd_buffer, PSTR("    пpи пpocтoй")); //при простой
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 221:
-        sprintf_P(lcd_buffer, PSTR("TEM\250EPAT\251PA HA\253A\247A ")); //ТЕМПEPATУРА НАЧАЛА
+        sprintf_P(lcd_buffer, PSTR(" TEMПEPATУPA HAЧAЛA")); //ТЕМПEPATУРА НАЧАЛА
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("(+)\276o \340e\344\273e\264\274a\277op\171,")); //(+)по Дефлегматору,
+        sprintf_P(lcd_buffer, PSTR("(+)пo Дeфлeгмaтopу,")); //(+)по Дефлегматору,
+        my_lcdprint(lcd_buffer, 2);
+
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("(-)пo Кубу")); //(-)по Кубу
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("(-)\276o K\171\262\171")); //(-)по Кубу
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("\340\245CT\245\247\247\261\341\245\245 = %i.%i"), TempDeflBegDistil / 10, abs(TempDeflBegDistil % 10));
-        my_lcdprint(lcd_buffer); //ДИСТИЛЛЯЦИИ =
+
+        dirtyTrickSetCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("ДИCTИЛЛЯЦИИ =%i.%i\337С"), TempDeflBegDistil / 10, abs(TempDeflBegDistil % 10)); //10.04.21 ДИСТИЛЛЯЦИИ =
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 222:
-        sprintf_P(lcd_buffer, PSTR("TEM\250EPAT\251PA B\256XO\340A")); //ТЕМПЕРATУРА ВЫХОДA
+        sprintf_P(lcd_buffer, PSTR(" TEMПEPATУPA BЫXOДA")); //ТЕМПЕРATУРА ВЫХОДA
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\343\270c\277\270\273\273\307\345\270\270 \276apo\263\303\274")); //дистилляции паровым
+
+        sprintf_P(lcd_buffer, PSTR("диcтилляции пapoвым")); //дистилляции паровым
+        my_lcdprint(lcd_buffer, 2);
+
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("oтбopoм = %i.%i \337С"), TempDefl / 10, TempDefl % 10); // 10.04.21 отбором =
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("o\277\262opo\274 = %i.%i"), TempDefl / 10, TempDefl % 10); //отбором =
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("HA \340E\252\247E\241MATOPE \276p\270")); //НА ДЕФЛЕГМАТОРЕ при
+
+        dirtyTrickSetCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("HA ДEФЛEГMATOPE пpи")); //НА ДЕФЛЕГМАТОРЕ при
         my_lcdprint(lcd_buffer);
         break;
     case 223:
-        sprintf_P(lcd_buffer, PSTR("\340E\247\304TA TEM\250EPAT\251P\256")); //ДЕЛЬТА ТЕМПЕРАТУРЫ
+        sprintf_P(lcd_buffer, PSTR(" ДEЛьTA TEMПEPATУPЫ")); //ДЕЛЬТА ТЕМПЕРАТУРЫ
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\343\270c\277\270\273\273\307\345\270\270 \276apo\263\303\274")); //дистилляции паровым
+        sprintf_P(lcd_buffer, PSTR("диcтилляции пapoвым")); //дистилляции паровым
+        my_lcdprint(lcd_buffer, 2);
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("oтбopoм = %i.%i \337С"), DeltaDefl / 10, DeltaDefl % 10); //10.04.21 отбором =
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("o\277\262opo\274 = %i.%i"), DeltaDefl / 10, DeltaDefl % 10); //отбором =
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("HA \340E\252\247E\241MATOPE \276p\270")); //HA ДЕФЛЕГМАТОРE при
+        dirtyTrickSetCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("HA ДEФЛEГMATOPE пpи")); //HA ДЕФЛЕГМАТОРE при
         my_lcdprint(lcd_buffer);
         break;
     case 224:
-        sprintf_P(lcd_buffer, PSTR("TEM\250EPAT\251PA B K\251\240E")); //ТЕМПЕРАТУРА В КУБЕ
+        sprintf_P(lcd_buffer, PSTR(" TEMПEPATУPA в кубе")); //ТЕМПЕРАТУРА В КУБЕ
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("c \343e\344\273e\264\274a\277opo\274")); //с дефлегматором
+        sprintf_P(lcd_buffer, PSTR("  c дeфлeгмaтopoм")); //с дефлегматором
+        my_lcdprint(lcd_buffer, 2);
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("пapoвым oтбopoм=%i.%i"), tEndDistDefl / 10, tEndDistDefl % 10); //паровым отбором=
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("\276apo\263\303\274 o\277\262opo\274=%i.%i"), tEndDistDefl / 10, tEndDistDefl % 10);
-        my_lcdprint(lcd_buffer); //паровым отбором=
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("OKOH\253AH\245\261 \340\245CT-\341\245\245")); //ОКОНЧАНИЯ ДИС-ЦИИ
+        dirtyTrickSetCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR(" OKOHЧAHИЯ ДИCT-ЦИИ")); //ОКОНЧАНИЯ ДИС-ЦИИ
         my_lcdprint(lcd_buffer);
         break;
     case 225:
-        sprintf_P(lcd_buffer, PSTR("C\270\264\275a\273 \276o o\272o\275\300a\275\270\270")); //Сигнал по окончании
+        sprintf_P(lcd_buffer, PSTR(" Cигнaл пo oкoнчaнии")); //Сигнал по окончании
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\276po\345ecca - %1u"), BeepEndProcess); //процесса -
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("    пpoцecca - %1u"), BeepEndProcess); //процесса -
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 226:
-        sprintf_P(lcd_buffer, PSTR("C\270\264\275a\273 c\274e\275\303")); //Сигнал смены
+        sprintf_P(lcd_buffer, PSTR("    Cигнaл cмeны")); //Сигнал смены
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\305\277a\276a - %1u"), BeepStateProcess); //этапа =
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("     этaпa - %1u"), BeepStateProcess); //этапа =
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 227:
-        sprintf_P(lcd_buffer, PSTR("\244\263\171\272 \275a\266a\277\270\307")); //Звук нажатия
+        sprintf_P(lcd_buffer, PSTR("    Звук нaжaтия")); //Звук нажатия
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\272\275o\276o\272 - %1u"), BeepKeyPress); //кнопок -
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("     кнoпoк - %1u"), BeepKeyPress); //кнопок -
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 228:
-        sprintf_P(lcd_buffer, PSTR("Mo\346\275oc\277\304 \276p\270 pa\267\263ape")); //Мощность при разваре
+        sprintf_P(lcd_buffer, PSTR("Moщнocть пpи paзвape")); //Мощность при разваре
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\267ep\275a = %4iW"), PowerRazvZerno); //зерна
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("   зepнa = %4iW"), PowerRazvZerno); //зерна
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 229:
-        sprintf_P(lcd_buffer, PSTR("\250pe\343e\273\304\275a\307 \274o\346\275oc\277\304")); //Предельная мощность
+        sprintf_P(lcd_buffer, PSTR("Пpeдeльнaя мoщнocть")); //Предельная мощность
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\276\270\263o\264o c\171c\273a = %4iW"), PowerVarkaZerno); //пивного сусла
-        my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("\276p\270 \263ap\272e \267ep\275a \270")); //при варке зерна и
+        sprintf_P(lcd_buffer, PSTR("пивoгo cуcлa = %4iW"), PowerVarkaZerno); //пивного сусла
+        my_lcdprint(lcd_buffer, 2);
+        dirtyTrickSetCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("  пpи вapкe зepнa и")); //при варке зерна и
         my_lcdprint(lcd_buffer);
         break;
     case 230:
-        sprintf_P(lcd_buffer, PSTR("\250ep\270o\343 o\262\275o\263\273e\275\270\307")); //Период обновления
+        sprintf_P(lcd_buffer, PSTR("Пepиoд oбнoвлeния")); //Период обновления
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("cep\263epa(ce\272) =%3u"), (unsigned int)PeriodRefrServer); //сервера(ceк) =
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("cepвepa = %3u сек"), (unsigned int)PeriodRefrServer); //10.04.21 сервера(ceк) =
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 231:
-        sprintf_P(lcd_buffer, PSTR("Ha\276p\307\266e\275\270e \267a\346\270\277\303")); //Напряжение защиты
+        sprintf_P(lcd_buffer, PSTR(" Haпpяжeниe зaщиты ")); //13.04.21 Напряжение защиты
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\272\273a\276a\275o\263 = %3uV"), (unsigned int)NaprPeregrev); //клапанов =
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("  клaпaнoв = %3uV"), (unsigned int)NaprPeregrev); //клапанов =
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 232:
-        sprintf_P(lcd_buffer, PSTR("\251po\263e\275\304 \262ap\343\303 =%4i"), UrovenBarda); //Уровень барды =
+        sprintf_P(lcd_buffer, PSTR("Уpoвeнь бapды =%4i"), UrovenBarda); //Уровень барды =
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\240ap\343oo\277\263o\343\300\270\272(%4u)"), U_GLV); //Бардоотводчик(..)
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("Бapдooтвoдчик(%4u)"), U_GLV); //Бардоотводчик(..)
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
-    case 233:
-        sprintf_P(lcd_buffer, PSTR("OT\240OP \241O\247OB =%4i"), UrovenProvodimostSR); //ОТБОР ГОЛОВ =
+    case 233: //1.04.21
+        sprintf_P(lcd_buffer, PSTR("(РЕКТ) ГOЛOBЫ = %4i"), UrovenProvodimostSR); //6.05.21 ОТБОР ГОЛОВ =
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("(-)\276o \263pe\274e\275\270(1=10\274)")); //(-)по времени(1=10м)
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("(-)пo вpeмeни(1=10м)")); //(-)по времени(1=10м)
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("2-a\275a\273o\264.\343a\277.\171po\263\275\307,")); //2-аналог.дат.уровня,
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("2-по aнaлoг.ДУ,")); //2-аналог.дат.уровня,
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("0-\277e\274\276,1-\345\270\344p.\343a\277.\171p")); //0-темп,1-цифр.дат.ур
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("0-по Тeмп.,1-цифp.ДУ")); //0-темп,1-цифр.дат.ур
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 234:
-        sprintf_P(lcd_buffer, PSTR("BPEM\261 PA\240OT\256 KO\247OHH\256")); //ВРЕМЯ РАБОТЫ КОЛОННЫ
+        sprintf_P(lcd_buffer, PSTR("(РЕКТ)PAБOTА KOЛOHHЫ")); //8.05.21 ВРЕМЯ РАБОТЫ КОЛОННЫ
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("-)c \274o\274e\275\277a \276po\264pe\263a")); //-)с момента прогревa
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("(-)c мoмeнтa пpoгpeв")); //3.04.21 -)с момента прогревa
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("+)o\277 \276oc\273.\270\267\274.\277e\274\276.")); //+)от посл.изм.темп.
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("(+)с пocл. изм. тeмп")); //3.04.21 +)от посл.изм.темп.
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("HA CE\240\261 =%5i ce\272."), TimeStabKolonna); //НА СЕБЯ=
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("HA CEБЯ =%5i ceк"), TimeStabKolonna); //НА СЕБЯ=
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 235:
-        sprintf_P(lcd_buffer, PSTR("OT\240OP \250O TEM\250EP.K\251\240A")); //ОТБОР ПО ТЕМПEP.КУБА
+        sprintf_P(lcd_buffer, PSTR("(РЕКТ)  OTБOP ПO")); //5.05.21 ОТБОР ПО ТЕМПEP.КУБА
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\253\270c\273o \277o\300e\272 = %3i"), (int)CntCHIM); //Число точек =
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR(" TEMПEPАТУРЕ КУБА:")); //5.05.21 добавлена строка
+        dirtyTrickSetCursor(0, 1);
+        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR(" Чиcлo тoчeк = %3i"), (int)CntCHIM); //Число точек =
+        dirtyTrickSetCursor(0, 2);
         my_lcdprint(lcd_buffer);
         break;
     case 236:
-        sprintf_P(lcd_buffer, PSTR("(PEKT)HACTPO\246KA \254\245M:")); //(РЕКТ)НАСТРОЙКА ШИМ:
+        sprintf_P(lcd_buffer, PSTR("(PEKT)HACTPOЙKA ШИM:")); //(РЕКТ)НАСТРОЙКА ШИМ:
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\275a c\272o\273\304\272o \254\245M \275\171\266\275o")); //на сколько ШИМ нужно
+        sprintf_P(lcd_buffer, PSTR("нa cкoлькo уменьшить")); //3.04.21 на сколько ШИМ нужно
+        my_lcdprint(lcd_buffer, 2);
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("   ШИМ пpи CTOПE")); //3.04.21 уменьшить при СТОПЕ
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("\171\274e\275\304\301\270\277\304 \276p\270 CTO\250E")); //уменьшить при СТОПЕ
-        my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("ABTO - %% \254\245M =%3i"), (int)DecrementCHIM); //АВТО - % ШИМ =
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("ABTO - %% ШИM = %3i%%"), (int)DecrementCHIM); //АВТО - % ШИМ =
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 237:
-        sprintf_P(lcd_buffer, PSTR("(PEKT)HACTPO\246KA \254\245M:")); //(РЕКТ)НАСТРОЙКА ШИМ:
+        sprintf_P(lcd_buffer, PSTR("(PEKT)HACTPOЙKA ШИM:")); //(РЕКТ)НАСТРОЙКА ШИМ:
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\275a c\272o\273\304\272o \254\245M \275\171\266\275o")); //на сколько ШИМ нужно
+        sprintf_P(lcd_buffer, PSTR(" увеличить ШИМ при")); //3.04.21 на сколько ШИМ нужно
+        my_lcdprint(lcd_buffer, 2);
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR(" отсутствии CTOПА")); //3.04.21 увелич.при длит.СТОП
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("\171\263e\273\270\300.\276p\270 \343\273\270\277.CTO\250")); //увелич.при длит.СТОП
-        my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("ABTO + %% \254\245M =%3i"), (int)IncrementCHIM); //АВТО + % ШИМ =
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("ABTO + %% ШИM = %3i%%"), (int)IncrementCHIM); //АВТО + % ШИМ =
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 238:
-        sprintf_P(lcd_buffer, PSTR("(PEKT)HACTPO\246KA \254\245M:")); //(РЕКТ)НАСТРОЙКА ШИМ:
+        sprintf_P(lcd_buffer, PSTR("(PEKT)HACTPOЙKA ШИM:")); //(РЕКТ)НАСТРОЙКА ШИМ:
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("Bpe\274\307 o\276pe\343e\273e\275\270\307,")); //Время определения,
+        sprintf_P(lcd_buffer, PSTR("  Время отсутствия")); //3.04.21 Время определения,
+        my_lcdprint(lcd_buffer, 2);
+        dirtyTrickSetCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR(" (Время ABTO + ШИM) ")); //3.04.21 что долго нет СТОПА
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("\300\277o \343o\273\264o \275e\277 CTO\250A")); //что долго нет СТОПА
-        my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("Bpe\274\307 ABTO+\254\245M=%5ic"), TimeAutoIncCHIM); //Время АВТО+ШИМ=
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("  СТОПА = %5iсек"), TimeAutoIncCHIM); //3.04.21 Время АВТО+ШИМ=
+        dirtyTrickSetCursor(0, 3);
         my_lcdprint(lcd_buffer);
         break;
     case 239:
-        sprintf_P(lcd_buffer, PSTR("BPEM\261 PECTA\240.KO\247OHH\256")); //ВРЕМЯ РЕСТАБ.КОЛОННЫ
+        sprintf_P(lcd_buffer, PSTR("(PEKT) АВТОВЫХОД ИЗ")); //6.05.21 ВРЕМЯ РЕСТАБ.КОЛОННЫ
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("(-)\276o\277o\274 o\277\262op XBOCT")); //(-)потом отбор ХВОСТ
+        sprintf_P(lcd_buffer, PSTR("0-выкл; (-)на хвосты")); //3.04.21 (-)потом отбор ХВОСТ
+        my_lcdprint(lcd_buffer, 2);
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("(+)на рестабилизацию")); //3.04.21 0-выход из СТОПА-вык
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("0-\263\303xo\343 \270\267 CTO\250A-\263\303\272")); //0-выход из СТОПА-вык
-        my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\340e\273\304\277a =%5ice\272"), TimeRestabKolonna); //Дельта=
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("СТОП через =%5iceк"), TimeRestabKolonna); //3.04.21 Дельта=
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 240:
-        sprintf_P(lcd_buffer, PSTR("\250A\251\244\256 \244AT\245PAH\245\261:")); //ПАУЗЫ ЗАТИРАНИЯ:
+        sprintf_P(lcd_buffer, PSTR("  ПAУЗЫ ЗATИPAHИЯ:")); //ПАУЗЫ ЗАТИРАНИЯ:
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("Ko\273\270\300ec\277\263o -%3i"), (int)CntPause); //Кoличество -
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("  Koличecтвo -%3i"), (int)CntPause); //Кoличество -
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
-    case 241:
-        sprintf_P(lcd_buffer, PSTR("ASC712 =%3i"), (int)CorrectASC712); //ASC712 =
+    case 241: //1.04.21
+        sprintf_P(lcd_buffer, PSTR("Использ. Д.Тока =%3i"), (int)CorrectASC712); //1.04.21 ASC712 =
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("2-\272oppe\272\277.\270c\276o\273\304\267.")); //2-коррект.использ.
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("2-ДТ иcпoльзуется")); //2-коррект.использ.
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("1-\272oppe\272\277.\275e \270c\276o\273\304\267")); //1-коррект.не использ
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("1-ДТ нe иcпoльзуется")); //1-коррект.не использ
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("0-\272oppe\272\277.\275e \270c\276o\273\304\267")); //0-коррект.не использ
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("0-ДТ нe иcпoльзуется")); //0-коррект.не использ
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 242:
-        sprintf_P(lcd_buffer, PSTR("IP A\340PEC CEPBEPA:")); //IP AДPEC CEPBEPA:
+        sprintf_P(lcd_buffer, PSTR("IP AДPEC CEPBEPA:")); //IP AДPEC CEPBEPA:
         my_lcdprint(lcd_buffer);
         sprintf_P(lcd_buffer, PSTR("%3u.%3u.%3u.%3u"), (unsigned int)ip[0], (unsigned int)ip[1], (unsigned int)ip[2], (unsigned int)ip[3]);
-        lcd.setCursor(0, 1);
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 243:
-        sprintf_P(lcd_buffer, PSTR("\250OPT CEPBEPA:")); //ПОРТ СЕРВЕРА:
+        sprintf_P(lcd_buffer, PSTR("ПOPT CEPBEPA:")); //ПОРТ СЕРВЕРА:
         my_lcdprint(lcd_buffer);
         sprintf_P(lcd_buffer, PSTR("%u"), ipPort);
-        lcd.setCursor(0, 1);
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 244:
-        sprintf_P(lcd_buffer, PSTR("ID O\240OP\251\340OBAH\245\261:")); //ID ОБОРУДОВАНИЯ
+        sprintf_P(lcd_buffer, PSTR("ID OБOPУДOBAHИЯ:")); //ID ОБОРУДОВАНИЯ
         my_lcdprint(lcd_buffer);
         sprintf_P(lcd_buffer, PSTR("%s"), idDevice);
-        lcd.setCursor(0, 1);
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 245:
-        sprintf_P(lcd_buffer, PSTR("HOMEP TE\247E\252OHA:")); //НОМЕР ТЕЛЕФОНА:
+        sprintf_P(lcd_buffer, PSTR("HOMEP TEЛEФOHA:")); //НОМЕР ТЕЛЕФОНА:
         my_lcdprint(lcd_buffer);
         sprintf_P(lcd_buffer, PSTR("%s"), my_phone);
-        lcd.setCursor(0, 1);
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 246:
-        sprintf_P(lcd_buffer, PSTR("TPEBO\241A \250O \340AB\247EH\245\260:")); //ТРЕВОГА ПО ДАВЛЕНИЮ:
+        sprintf_P(lcd_buffer, PSTR("Tревога по давлению:")); //1.04.21 ТРЕВОГА ПО ДАВЛЕНИЮ:
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("MPX5010 = %i"), AlarmMPX5010);
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("  MPX5010 = %i mmHg"), AlarmMPX5010 / 10); //11.04.21
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 247:
-        sprintf_P(lcd_buffer, PSTR("\250P\245MEHEH\245E ABTOHOM.")); //Применение автоном.
+        sprintf_P(lcd_buffer, PSTR("     Применение")); //Применение автоном.
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("OX\247A\243\340EH\245\261 = %i"), FlAvtonom); //охлаждения =
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("    автономного")); //
+        my_lcdprint(lcd_buffer, 1);
+        sprintf_P(lcd_buffer, PSTR("   охлаждения = %i"), FlAvtonom); //охлаждения =
+        dirtyTrickSetCursor(0, 2);
         my_lcdprint(lcd_buffer);
         break;
-    case 248:
-        sprintf_P(lcd_buffer, PSTR("Bpe\274\307 o\277\272p.\272\273a\276a\275a")); //Время откр.клапана
+    case 248: // 2.04.21
+        sprintf_P(lcd_buffer, PSTR("   Bpeмя oткpытия")); //Время откр.клапана
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\262ap\343oo\277\263o\343\300\270\272a = %i"), (int)timeOpenBRD); //бардоотводчика =
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("      клапана")); //2.04.21 добавлена строка
+        my_lcdprint(lcd_buffer, 1);
+        sprintf_P(lcd_buffer, PSTR("бapдooтвoдчикa = %i"), (int)timeOpenBRD); //бардоотводчика =
+        dirtyTrickSetCursor(0, 2);
         my_lcdprint(lcd_buffer);
         break;
     case 249:
-        sprintf_P(lcd_buffer, PSTR("PID \250APAMETP\256:")); //PID ПАРАМЕТРЫ:
+        sprintf_P(lcd_buffer, PSTR("   PID ПAPAMETPЫ:")); //PID ПАРАМЕТРЫ:
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("%4i %4i %4i"), (int)PIDTemp[0], (int)PIDTemp[1], (int)PIDTemp[2]);
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("  %4i %4i %4i"), (int)PIDTemp[0], (int)PIDTemp[1], (int)PIDTemp[2]);
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 254:
-        sprintf_P(lcd_buffer, PSTR("Mo\346\275oc\277\304 H\240K = %4iW"), PowerNBK); //Мощность НБК =
+        sprintf_P(lcd_buffer, PSTR("НБК:Moщнocть = %4iW"), PowerNBK); //6.05.21 Мощность НБК =
         my_lcdprint(lcd_buffer);
         break;
     case 255:
-        sprintf_P(lcd_buffer, PSTR("Wi-Fi To\300\272a \343oc\277\171\276a:")); //Wi-Fi Точка доступа:
+        sprintf_P(lcd_buffer, PSTR("Wi-Fi Toчкa дocтупa:")); //Wi-Fi Точка доступа:
         my_lcdprint(lcd_buffer);
         sprintf_P(lcd_buffer, PSTR("%s"), WiFiAP);
-        lcd.setCursor(0, 1);
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 256:
-        sprintf_P(lcd_buffer, PSTR("Wi-Fi \250apo\273\304 ce\277\270:")); //Wi-Fi Пароль сети:
+        sprintf_P(lcd_buffer, PSTR("Wi-Fi Пapoль ceти:")); //Wi-Fi Пароль сети:
         my_lcdprint(lcd_buffer);
         sprintf_P(lcd_buffer, PSTR("%s"), WiFiPass);
-        lcd.setCursor(0, 1);
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
-    case 257:
-        sprintf_P(lcd_buffer, PSTR("\252PAK\341\245OHHA\261 \340\245CT-\261:")); //ФРАКЦИОННАЯ ДИСТ-Я:
+    case 257: //2.04.21
+        sprintf_P(lcd_buffer, PSTR("    ФPAKЦИOHHAЯ")); //ФРАКЦИОННАЯ ДИСТ-Я:
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("Ko\273\270\300-\263o \344pa\272\345\270\271=%3i"), (int)CountFractionDist); //Колич-во фраккций=
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("    ДИCTИЛЯЦИЯ:")); // //2.04.21 добавлена строка
+        my_lcdprint(lcd_buffer, 1);
+        sprintf_P(lcd_buffer, PSTR("Koл-вo фpaкций =%3i"), (int)CountFractionDist); //Колич-во фраккций=
+        dirtyTrickSetCursor(0, 2);
         my_lcdprint(lcd_buffer);
         break;
-    case 258:
-        sprintf_P(lcd_buffer, PSTR("\252PAK\341\245OHHA\261 PEKT-\261:")); //ФРАКЦИОННАЯ РЕКТ-Я:
+    case 258: //2.04.21
+        sprintf_P(lcd_buffer, PSTR("    ФPAKЦИOHHAЯ")); //ФРАКЦИОННАЯ РЕКТ-Я:
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("Ko\273\270\300-\263o \344pa\272\345\270\271=%3i"), (int)CountFractionRect); //Колич-во фраккций=
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("   РЕКТИФИКАЦИЯ:")); // //2.04.21 добавлена строка
+        my_lcdprint(lcd_buffer, 1);
+        sprintf_P(lcd_buffer, PSTR("Koл-вo фpaкций =%3i"), (int)CountFractionRect); //Колич-во фраккций=
+        dirtyTrickSetCursor(0, 2);
         my_lcdprint(lcd_buffer);
         break;
     case 259:
-        sprintf_P(lcd_buffer, PSTR("Te\274\276epa\277\171pa \267ac\303\276\270")); //Температура засыпи
+        sprintf_P(lcd_buffer, PSTR("Teмпepaтуpa зacыпи")); //Температура засыпи
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\267a\277opa = %i.0"), (int)TempZSP); //затора =
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR(" зaтopa = %i.0 \337С"), (int)TempZSP); //10.04.21 затора =
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 260:
-        sprintf_P(lcd_buffer, PSTR("Te\274\276-pa ocaxap\270\263a\275\270\307")); //Тмпер-ра осахаривания
+        sprintf_P(lcd_buffer, PSTR("Teмп-pa ocaxapивaния")); //Тмпер-ра осахаривания
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\267a\277opa = %i.0"), (int)TempZSPSld); //затора
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("  зaтopa = %i.0 \337С"), (int)TempZSPSld); //10.04.21 затора
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 261:
-        sprintf_P(lcd_buffer, PSTR("Te\274\276epa\277-pa \262po\266e\275\270\307")); //Температ-ра брожения
+        sprintf_P(lcd_buffer, PSTR("Teмпepaтуpa бpoжeния")); //1.04.21 Температ-ра брожения
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\267a\277opa = %i.0"), (int)TempHLDZatorBrog1); //затора =
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("  зaтopa = %i.0 \337С"), (int)TempHLDZatorBrog1); //10.04.21 затора =
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
     case 262:
-        sprintf_P(lcd_buffer, PSTR("O\240\342A\261 MO\342HOCT\304=%4iW"), Power); //ОБЩАЯ МОЩНОСТЬ =
+        sprintf_P(lcd_buffer, PSTR("OБЩAЯ MOЩHOCTь=%4iW"), Power); //ОБЩАЯ МОЩНОСТЬ =
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("Mo\346\275.\252A\244\256 3 =  %4iW"), PowerPhase[2]); //Мощн.ФАЗЫ 3 =
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("Moщн.ФAЗЫ 3 =  %4iW"), PowerPhase[2]); //Мощн.ФАЗЫ 3 =
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("Mo\346\275.\252A\244\256 2 =  %4iW"), PowerPhase[1]); //Мощн.ФАЗЫ 2 =
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("Moщн.ФAЗЫ 2 =  %4iW"), PowerPhase[1]); //Мощн.ФАЗЫ 2 =
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("Mo\346\275.\252A\244\256 1 =  %4iW"), PowerPhase[0]); //Мощн.ФАЗЫ 1 =
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("Moщн.ФAЗЫ 1 =  %4iW"), PowerPhase[0]); //Мощн.ФАЗЫ 1 =
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 263:
-        sprintf_P(lcd_buffer, PSTR("\250po\345e\275\277 pac\276pe\343-\275\270\307")); //Пpoцент распред-ния
+        sprintf_P(lcd_buffer, PSTR("Пpoцeнт pacпpeд-ния")); //Пpoцент распред-ния
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("O\262\346\270\271 \276po\345e\275\277 = %3i%%"), (int)KtPhase[0] + KtPhase[1] + KtPhase[2]);
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("Oбщий пpoцeнт = %3i%%"), (int)KtPhase[0] + KtPhase[1] + KtPhase[2]);
         my_lcdprint(lcd_buffer); //Общий процент =
-        lcd.setCursor(0, 2);
+        dirtyTrickSetCursor(0, 2);
         sprintf_P(lcd_buffer, PSTR("%3i%% + %3i%% + %3i%%"), (int)KtPhase[0], (int)KtPhase[1], (int)KtPhase[2]); //100% + 100% + 100%
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\274o\346\275oc\277\270 \276o \344a\267a\274:"), (int)KtPhase[0]); //мощности по фазам:
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("мoщнocти пo фaзaм:"), (int)KtPhase[0]); //мощности по фазам:
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 264:
-        sprintf_P(lcd_buffer, PSTR("M\270\275\270\274a\273\304\275oe \343a\263\273e\275\270e")); //Минимальное давление
-        my_lcdprint(lcd_buffer); //НБК:
-        sprintf_P(lcd_buffer, PSTR("H\240K: %i.%i+%i.%i=%i.%i"), ((int)minPressNBK * 5) / 10, ((int)minPressNBK * 5) % 10, ((int)deltaPressNBK) / 10, ((int)deltaPressNBK) % 10, ((int)minPressNBK * 5 + (int)deltaPressNBK) / 10, ((int)minPressNBK * 5 + (int)deltaPressNBK) % 10);
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("  HБK: Mинимaльнoe")); //Минимальное давление //НБК:
+        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("давление = %i.%immHg"), ((int)minPressNBK * 5) / 10, ((int)minPressNBK * 5) % 10); //20.04.21 Минимальное давление //НБК:
+        dirtyTrickSetCursor(0, 1);
+        my_lcdprint(lcd_buffer);
+
+        sprintf_P(lcd_buffer, PSTR("   %i.%i+%i.%i=%i.%i"), ((int)minPressNBK * 5) / 10, ((int)minPressNBK * 5) % 10, ((int)deltaPressNBK) / 10, ((int)deltaPressNBK) % 10, ((int)minPressNBK * 5 + (int)deltaPressNBK) / 10, ((int)minPressNBK * 5 + (int)deltaPressNBK) % 10);
+        dirtyTrickSetCursor(0, 3);
         my_lcdprint(lcd_buffer);
         break;
     case 265:
-        sprintf_P(lcd_buffer, PSTR("\340e\273\304\277a \343a\263\273e\275\270\307")); //Дельта давления
-        my_lcdprint(lcd_buffer); //НБК:
-        sprintf_P(lcd_buffer, PSTR("H\240K: %i.%i+%i.%i=%i.%i"), ((int)minPressNBK * 5) / 10, ((int)minPressNBK * 5) % 10, ((int)deltaPressNBK) / 10, ((int)deltaPressNBK) % 10, ((int)minPressNBK * 5 + (int)deltaPressNBK) / 10, ((int)minPressNBK * 5 + (int)deltaPressNBK) % 10);
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("  НБК:  Дeльтa")); //Дельта давления//НБК:
+        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("давления = %i.%immHg"), ((int)deltaPressNBK) / 10, ((int)deltaPressNBK) % 10); //20.04.21 Минимальное давление //НБК:
+        dirtyTrickSetCursor(0, 1);
+        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("    %i.%i+%i.%i=%i.%i"), ((int)minPressNBK * 5) / 10, ((int)minPressNBK * 5) % 10, ((int)deltaPressNBK) / 10, ((int)deltaPressNBK) % 10, ((int)minPressNBK * 5 + (int)deltaPressNBK) / 10, ((int)minPressNBK * 5 + (int)deltaPressNBK) % 10);
+        dirtyTrickSetCursor(0, 3);
         my_lcdprint(lcd_buffer);
         break;
     case 266:
-        sprintf_P(lcd_buffer, PSTR("Koppe\272\345\270\307 \276ep\270o\343a")); //Коррекция периода
+        sprintf_P(lcd_buffer, PSTR("  HБK:  Период")); //25.04.21 Коррекция периода
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\262pa\264\270(H\240K) = %3i"), (int)timePressNBK * 5); //браги(НБК) =
+        dirtyTrickSetCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR(" изменения cкopocти")); //25.04.21 скорости подачи
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
-        sprintf_P(lcd_buffer, PSTR("c\272opoc\277\270 \276o\343a\300\270")); //скорости подачи
+
+        sprintf_P(lcd_buffer, PSTR("   пoдaчи бpaги,")); //25.04.21 браги(НБК) =
+        dirtyTrickSetCursor(0, 2);
         my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("Один раз в = %3i сек"), (int)timePressNBK * 5); //25.04.21 браги(НБК) =
+        dirtyTrickSetCursor(0, 3);
+        my_lcdprint(lcd_buffer);
+
         break;
     case 267:
-        sprintf_P(lcd_buffer, PSTR("\251\276pa\263.\275acoco\274 H\240K%3i"), (int)UprNasosNBK); //Управ.насосом НБК:
+        sprintf_P(lcd_buffer, PSTR("  НБК: нacoc = %3i"), (int)UprNasosNBK); //10.04.21 Управ.насосом НБК:
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("5-\171\276pa\263\273e\275\270e \276o \254\245M")); //5-управление по ШИМ
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("5- упpaвлeниe пo ШИM")); //5-управление по ШИМ
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("1-BK\247.\263.\171p,B\256K.\275.\171p")); //1-ВКЛ.в.ур,ВЫК.н.ур
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("1- Bкл.'1', Bыкл.'0'")); //1-ВКЛ.в.ур,ВЫК.н.ур
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("0-BK\247.\275.\171p,B\256K.\263.\171p")); //0-ВКЛ.н.ур,ВЫК.в.ур
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("0- Bкл.'0', Bыкл.'1'")); //0-ВКЛ.н.ур,ВЫК.в.ур
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 268:
-        sprintf_P(lcd_buffer, PSTR("%%-o\277\262opa \341.\250.=%3i"), (int)ProcChimOtbCP); //%-отбора Ц.П.=
+        sprintf_P(lcd_buffer, PSTR("%% - oтбopa Ц.П.=%3i"), (int)ProcChimOtbCP); //%-отбора Ц.П.=
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
-        sprintf_P(lcd_buffer, PSTR("(-)1=0,1ce\272-\272a\266\343.10c")); //(-)1=0,1сек-кажд.10с
+        dirtyTrickSetCursor(0, 3);
+        sprintf_P(lcd_buffer, PSTR("(-)1=0,1c кaжд. 10c")); //(-)1=0,1сек-кажд.10с
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
-        sprintf_P(lcd_buffer, PSTR("(+)1=1%%<OT\240OP \241O\247OB>")); //(+)1=1%<ОТБОР ГОЛОВ>
+        dirtyTrickSetCursor(0, 2);
+        sprintf_P(lcd_buffer, PSTR("(+)1=1%%<OTБOP ГOЛOB>")); //(+)1=1%<ОТБОР ГОЛОВ>
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("0-\275e\277 o\277\262opa,")); //0-нет отбора
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR(" 0 - нeт oтбopa,")); //0-нет отбора
+        my_lcdprint(lcd_buffer, 1);
         break;
 #if ENABLE_SENSOR_SORTING
-    case 269:
-        sprintf_P(lcd_buffer, PSTR("\245\267\274e\275.\275o\274epa DS18B20")); //Измен.номера DS18B20
+    case 269: //13.04.21
+        sprintf_P(lcd_buffer, PSTR("  Измeнение нoмepа")); //Измен.номера DS18B20
         my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("      DS18B20")); //Измен.номера DS18B20
+        dirtyTrickSetCursor(0, 1);
+        my_lcdprint(lcd_buffer);
+
         // Печатаем номера всех наших сенсоров
-        for (int i = 0, n = 0; i < MAX_DS1820; i++) {
-            n += sprintf_P(lcd_buffer + n, (i > 0) ? PSTR(" %02d") : PSTR("%02d"), (int)ds1820_nums[i] + 1);
-        }
-        lcd.setCursor(0, 1);
-        my_lcdprint(lcd_buffer);
+        //  for(int i = 0, n = 0; i < MAX_DS1820; i++) {
+        //	n += sprintf_P(lcd_buffer + n, (i>0)?PSTR(" %02d"):PSTR("%02d"), (int)ds1820_nums[i] + 1);
+        //	//my_lcdprint(lcd_buffer);  //13.04.21
+        //}
+        //dirtyTrickSetCursor(0, 2);//13.04.21
+        //lcd.setCursor(0, 1);        //13.04.21
+        //my_lcdprint(lcd_buffer);
         break;
 #endif
 #if USE_BMP280_SENSOR
     case 270:
-        sprintf_P(lcd_buffer, PSTR("Bpe\274\307 o\276poca \343a\277\300\270\272a")); //Время опроса датчика
+        sprintf_P(lcd_buffer, PSTR("Bpeмя oпpoca дaтчикa")); //Время опроса датчика
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("BMP280 = %3i"), (int)timePressAtm);
-        lcd.setCursor(0, 1);
+        sprintf_P(lcd_buffer, PSTR("    BMP280 = %3i"), (int)timePressAtm);
+        dirtyTrickSetCursor(0, 1);
         my_lcdprint(lcd_buffer);
         break;
-#endif // USE                                                                                      //Температура DS%1i =
-    case 300:
-        sprintf_P(lcd_buffer, PSTR("Te\274\276epa\277\171pa DS%1i=%i.%i"), nPopr + 1, DS_TEMP(nPopr) / 10, DS_TEMP(nPopr) % 10);
+#endif // USE
+    case 300: //12.04.21
+        sprintf_P(lcd_buffer, PSTR("Teмпepaтуpa, \337С")); //12.04.21 Температура DS%1i =
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\250o\276p.%i.%i Te\274\276.=%i.%i"), ds1820_popr[nPopr] / 10, abs(ds1820_popr[nPopr] % 10), (DS_TEMP(nPopr) + ds1820_popr[nPopr]) / 10, (DS_TEMP(nPopr) + ds1820_popr[nPopr]) % 10);
-        lcd.setCursor(0, 1);
-        my_lcdprint(lcd_buffer); //Попр.   Темп.=
+        sprintf_P(lcd_buffer, PSTR("DS%1i         = %i.%i"), nPopr + 1, DS_TEMP(nPopr) / 10, DS_TEMP(nPopr) % 10); //12.04.21 Температура DS%1i =
+        dirtyTrickSetCursor(0, 1);
+        my_lcdprint(lcd_buffer);
+        //sprintf_P(lcd_buffer, PSTR("Пoпpавка    = %i.%i"), ds1820_popr[nPopr] / 10, abs(ds1820_popr[nPopr] % 10));//24.04.21 Попр.   Темп.=
+        dtostrf((float)ds1820_popr[nPopr] / 10, 2, 1, str_popr); //24.04.21
+        sprintf_P(lcd_buffer, PSTR("Поправка    = %s"), str_popr); //24.04.21
+
+        dirtyTrickSetCursor(0, 2);
+        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("С поправкой = %i.%i"), (DS_TEMP(nPopr) + ds1820_popr[nPopr]) / 10, (DS_TEMP(nPopr) + ds1820_popr[nPopr]) % 10); //5.04.21 Попр.   Темп.=
+        dirtyTrickSetCursor(0, 3);
+        my_lcdprint(lcd_buffer);
+
         break;
     case 301:
-        sprintf_P(lcd_buffer, PSTR("TempK(%1i)=%4i"), (int)nPopr, tempK[nPopr]);
+        //6.05.21
+        //if (flPopr == 0) {
+        //	sprintf_P(lcd_buffer, PSTR("%s %c"), lcd_buffer, '*');
+        //} else {
+        //	sprintf_P(lcd_buffer, PSTR("TempK(%1i)=%4i"), (int)nPopr, tempK[nPopr]);
+        //}
+        //my_lcdprint(lcd_buffer);
+
+        //if (flPopr == 1) {
+        //	sprintf_P(lcd_buffer, PSTR("%s %c"), lcd_buffer, '*');
+        //} else {
+        //	sprintf_P(lcd_buffer, PSTR("ШИM(%1i)=%3i"), (int)nPopr, (int)CHIM[nPopr]);               //ШИМ(%1i)=%3i
+        //}
+        //my_lcdprint(lcd_buffer, 1);
+        //break;
+
+        sprintf_P(lcd_buffer, PSTR("Точка %1i = %i.%i\337С"), (int)nPopr, tempK[nPopr] / 10, tempK[nPopr] % 10); //6.05.21
         if (flPopr == 0) {
             sprintf_P(lcd_buffer, PSTR("%s %c"), lcd_buffer, '*');
         }
 
-        my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\254\245M(%1i)=%3i"), (int)nPopr, (int)CHIM[nPopr]); //ШИМ(%1i)=%3i
+        my_lcdprint(lcd_buffer); //вывод содержимого буфера на LCD
+        sprintf_P(lcd_buffer, PSTR("ШИM   %1i =  %3i %%"), (int)nPopr, (int)CHIM[nPopr]); ////6.05.21 ШИМ(%1i)=%3i
         if (flPopr == 1) {
             sprintf_P(lcd_buffer, PSTR("%s %c"), lcd_buffer, '*');
         }
 
-        lcd.setCursor(0, 1);
-        my_lcdprint(lcd_buffer);
+        //lcd.setCursor(0, 1);
+        dirtyTrickSetCursor(0, 1);
+        my_lcdprint(lcd_buffer); //вывод содержимого буфера на LCD
         break;
 
     case 302:
         // Первое значение это время работы насоса
         if (nPopr == 0)
-            sprintf_P(lcd_buffer, PSTR("Pa\262o\277a \275acoca =%2im"), (int)tempP[nPopr]); //Работа насоса =
+            sprintf_P(lcd_buffer, PSTR("Paбoтa нacoca %2iм"), (int)tempP[nPopr]); //6.05.21 Работа насоса =
         else
-            sprintf_P(lcd_buffer, PSTR("Te\274\276.\276a\171\267\303 \356%i = %i"), (int)nPopr, (int)tempP[nPopr]);
+            sprintf_P(lcd_buffer, PSTR("Точка %i = %3i \337С "), (int)nPopr, (int)tempP[nPopr]); //6.05.21 Темп.паузы(значок шестигранника)=
 
-        if (flPopr == 0) //Темп.паузы(значок шестигранника)=
-        {
+        if (flPopr == 0) {
             sprintf_P(lcd_buffer, PSTR("%s %c"), lcd_buffer, '*');
         }
 
         my_lcdprint(lcd_buffer);
+
         if (nPopr == 0)
-            sprintf_P(lcd_buffer, PSTR("\250a\171\267a \275acoca  =%2im"), (int)timeP[nPopr]); //Пауза насоса =
+            sprintf_P(lcd_buffer, PSTR("Пaузa нacoca  %2iм"), (int)timeP[nPopr]); //6.05.21 Пауза насоса =
         else
-            sprintf_P(lcd_buffer, PSTR("Bpe\274\307 \276a\171\267\303\356%i=%3im"), (int)nPopr, (int)timeP[nPopr]);
-
-        if (flPopr == 1) //Время паузы(значок шестигранника)=
-        {
+            sprintf_P(lcd_buffer, PSTR("Пaуза %i = %3i мин"), (int)nPopr, (int)timeP[nPopr]); //6.05.21 Время паузы(значок шестигранника)=
+        if (flPopr == 1) {
             sprintf_P(lcd_buffer, PSTR("%s %c"), lcd_buffer, '*');
         }
 
-        lcd.setCursor(0, 1);
-        my_lcdprint(lcd_buffer);
+        my_lcdprint(lcd_buffer, 1);
         break;
 
     case 303:
         sprintf_P(lcd_buffer, PSTR("%3u.%3u.%3u.%3u"), (unsigned int)ip[0], (unsigned int)ip[1], (unsigned int)ip[2], (unsigned int)ip[3]);
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
+
+        dirtyTrickSetCursor(0, 1);
         j = -1;
         while (j < nPopr * 4) {
             j++;
@@ -2621,7 +2949,8 @@ void DisplayData() //************ РЕЖИМ ПРОСМОТРА ****************
     case 304:
         sprintf_P(lcd_buffer, PSTR("%s (%3u)"), idDevice, (unsigned int)idDevice[nPopr]);
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
+
+        dirtyTrickSetCursor(0, 1);
         j = 0;
         while (j < nPopr) {
             lcd_buffer[j] = ' ';
@@ -2637,7 +2966,7 @@ void DisplayData() //************ РЕЖИМ ПРОСМОТРА ****************
     case 305:
         sprintf_P(lcd_buffer, PSTR("%s/%3u)"), my_phone, (unsigned int)my_phone[nPopr]);
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
+        dirtyTrickSetCursor(0, 1);
         j = 0;
         while (j < nPopr) {
             lcd_buffer[j] = ' ';
@@ -2652,7 +2981,8 @@ void DisplayData() //************ РЕЖИМ ПРОСМОТРА ****************
     case 309:
         sprintf_P(lcd_buffer, PSTR("%4i %4i %4i"), (int)PIDTemp[0], (int)PIDTemp[1], (int)PIDTemp[2]);
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
+
+        dirtyTrickSetCursor(0, 1);
         if (nPopr == 0)
             sprintf_P(lcd_buffer, PSTR("   P"));
         if (nPopr == 1)
@@ -2665,7 +2995,7 @@ void DisplayData() //************ РЕЖИМ ПРОСМОТРА ****************
     case 310:
         sprintf_P(lcd_buffer, PSTR("%s /%3u"), WiFiAP, (unsigned int)WiFiAP[nPopr]);
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
+        dirtyTrickSetCursor(0, 1);
         j = 0;
         while (j < nPopr) {
             lcd_buffer[j] = ' ';
@@ -2680,7 +3010,7 @@ void DisplayData() //************ РЕЖИМ ПРОСМОТРА ****************
     case 311:
         sprintf_P(lcd_buffer, PSTR("%s /%3u"), WiFiPass, (unsigned int)WiFiPass[nPopr]);
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
+        dirtyTrickSetCursor(0, 1);
         j = 0;
         while (j < nPopr) {
             lcd_buffer[j] = ' ';
@@ -2695,129 +3025,138 @@ void DisplayData() //************ РЕЖИМ ПРОСМОТРА ****************
     case 312:
         // последнее значение это тест фракционника
         if (nPopr == MAX_CNT_FRACTION_DIST) {
-            lcd.clear();
-            lcd.setCursor(0, 1);
-            sprintf_P(lcd_buffer, PSTR("TECT \252pa\272\345\270o\275\275\270\272a")); //ТЕСТ Фракционника
+            dirtyTrickLcdClear();
+            dirtyTrickSetCursor(0, 1);
+            sprintf_P(lcd_buffer, PSTR(" TECT Фpaкциoнникa")); //ТЕСТ Фракционника
             my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("\343\270c\277\270\273\273\307\345\270\270 =%3i"), (int)TekFraction + 1);
-        } //дистилляции =
-        else {
+
+            sprintf_P(lcd_buffer, PSTR("диcтилляции =%3i\337С"), (int)TekFraction + 1); //10.04.21 дистилляции =
+        } else {
             if (TempFractionDist[nPopr] >= 0) {
-                sprintf_P(lcd_buffer, PSTR("Te\274\276-pa o\272o\275\300a\275\270\307")); //Темп-ра окончания
+                sprintf_P(lcd_buffer, PSTR("%1i Фр. Окoнчaние по:"), (int)nPopr + 1); //20.04.21 Темп-ра окончания
                 my_lcdprint(lcd_buffer); //отбора %1i фракц.=%4i
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("(+)\276o Te\274\276,(-)\276o Bp.")); //(+)по Темп,(-)по Вр.
+
+                dirtyTrickSetCursor(0, 3);
+                sprintf_P(lcd_buffer, PSTR("(+)Teмп-ра,(-)Bpемя")); //20.04.21 (+)по Темп,(-)по Вр.
                 my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 1);
-                sprintf_P(lcd_buffer, PSTR("o\277\262opa %1i\344pa\272\345.=%i.%i"), (int)nPopr + 1, (int)TempFractionDist[nPopr] / 10, (int)TempFractionDist[nPopr] % 10);
+
+                sprintf_P(lcd_buffer, PSTR("Температуре = %i.%i"), (int)TempFractionDist[nPopr] / 10, (int)TempFractionDist[nPopr] % 10); //20.04.21 "oтбopa %1iфpaкц.=%i.%i"
             } else {
-                sprintf_P(lcd_buffer, PSTR("Bpe\274\307 o\277\262opa")); //Вpемя отбора
+                sprintf_P(lcd_buffer, PSTR("%1i Фр. Окoнчaние по:"), (int)nPopr + 1); //20.04.21 Вpемя отбора
                 my_lcdprint(lcd_buffer); //%1i-й фракции=%5im
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("(+)\276o Te\274\276,(-)\276o Bp.")); //(+)по Темп,(-)по Вр.
+
+                dirtyTrickSetCursor(0, 3);
+                sprintf_P(lcd_buffer, PSTR("(+)Teмп-ра,(-)Bpемя")); //20.04.21 (+)по Темп,(-)по Вр.
                 my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 1);
-                sprintf_P(lcd_buffer, PSTR("%1i-\271 \344pa\272\345\270\270 =%5im"), (int)nPopr + 1, (int)-TempFractionDist[nPopr]);
+
+                sprintf_P(lcd_buffer, PSTR("Времени = %5iмин"), (int)-TempFractionDist[nPopr]); //20.04.21 %1i-й фpaкции =%5im
             }
             if (flPopr == 0) {
                 sprintf_P(lcd_buffer, PSTR("%s%c"), lcd_buffer, '*');
             }
 
-            my_lcdprint(lcd_buffer);
+            my_lcdprint(lcd_buffer, 1);
 
             if (flPopr == 1)
-                sprintf_P(lcd_buffer, PSTR("\251\264o\273=%3i*, %4iW"), (int)AngleFractionDist[nPopr], PowerFractionDist[nPopr]);
+                sprintf_P(lcd_buffer, PSTR("Угoл = %3i*, %4iW"), (int)AngleFractionDist[nPopr], PowerFractionDist[nPopr]); //20.04.21
             else
-                sprintf_P(lcd_buffer, PSTR("\251\264o\273=%3i , %4iW"), (int)AngleFractionDist[nPopr], PowerFractionDist[nPopr]);
+                sprintf_P(lcd_buffer, PSTR("Угoл = %3i , %4iW"), (int)AngleFractionDist[nPopr], PowerFractionDist[nPopr]); //20.04.21
+
             //угол=%3i ,%4iW
             if (flPopr == 2)
                 sprintf_P(lcd_buffer, PSTR("%s%c"), lcd_buffer, '*'); //угол=%3i ,%4iW
         }
-        lcd.setCursor(0, 2);
-        my_lcdprint(lcd_buffer);
+
+        my_lcdprint(lcd_buffer, 2);
         break;
     case 313:
         // последнее значение это тест фракционника
         if (nPopr == MAX_CNT_FRACTION_RECT) {
-            lcd.clear();
-            lcd.setCursor(0, 1);
-            sprintf_P(lcd_buffer, PSTR("TECT \252pa\272\345\270o\275\275\270\272a")); //ТЕСТ Фракционника
+            dirtyTrickLcdClear();
+            dirtyTrickSetCursor(0, 1);
+            sprintf_P(lcd_buffer, PSTR(" TECT Фpaкциoнникa")); //ТЕСТ Фракционника
             my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("pe\272\277\270\344\270\272a\345\270\270 =%3i"), (int)TekFraction + 1);
-        } //ректификации =
-        else {
+            sprintf_P(lcd_buffer, PSTR("peктификaции =%3i \337С"), (int)TekFraction + 1); //10.04.21 ректификации =
+        } else {
             if (TempFractionRect[nPopr] >= 0) {
-                sprintf_P(lcd_buffer, PSTR("Te\274\276-pa o\272o\275\300a\275\270\307")); //Темп-ра окончания
+                sprintf_P(lcd_buffer, PSTR("%1i Фр. Окoнчaние по:"), (int)nPopr + 1); //20.04.21 Темп-ра окончания
                 my_lcdprint(lcd_buffer); //отбора %1i фракции=%4i
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("(+)\276o Te\274\276,(-)\276o Bp.")); //(+)по Темп,(-)по Вр.
+                dirtyTrickSetCursor(0, 3);
+                sprintf_P(lcd_buffer, PSTR("(+)Teмп-ра,(-)Bpемя")); //(+)по Темп,(-)по Вр.
                 my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 1);
-                sprintf_P(lcd_buffer, PSTR("o\277\262opa %1i\344pa\272\345.=%i.%i"), (int)nPopr + 1, (int)TempFractionRect[nPopr] / 10, (int)TempFractionRect[nPopr] % 10);
+                //dirtyTrickSetCursor(0, 1);//20.04.21
+                sprintf_P(lcd_buffer, PSTR("Температуре = %i.%i"), (int)TempFractionRect[nPopr] / 10, (int)TempFractionRect[nPopr] % 10); //20.04.21 "oтбopa %1iфpaкц.=%i.%i"
             } else {
-                sprintf_P(lcd_buffer, PSTR("Bpe\274\307 o\277\262opa")); //Вpемя отбора
-                my_lcdprint(lcd_buffer); //%1i-й фракции =%5im
-                lcd.setCursor(0, 3);
-                sprintf_P(lcd_buffer, PSTR("(+)\276o Te\274\276,(-)\276o Bp.")); //(+)по Темп,(-)по Вр.
+                sprintf_P(lcd_buffer, PSTR("%1i Фр. Окoнчaние по:"), (int)nPopr + 1); ////20.04.21Вpемя отбора
+                my_lcdprint(lcd_buffer); ////20.04.21  %1i-й фракции =%5im
+                dirtyTrickSetCursor(0, 3);
+                sprintf_P(lcd_buffer, PSTR("(+)Teмп-ра,(-)Bpемя")); ////20.04.21(+)по Темп,(-)по Вр.
                 my_lcdprint(lcd_buffer);
-                lcd.setCursor(0, 1);
-                sprintf_P(lcd_buffer, PSTR("%1i-\271 \344pa\272\345\270\270 =%5im"), (int)nPopr + 1, (int)-TempFractionRect[nPopr]);
+                //dirtyTrickSetCursor(0, 1);//20.04.21
+                sprintf_P(lcd_buffer, PSTR("Времени = %5iмин"), (int)-TempFractionRect[nPopr]); //20.04.21 %1i-й фpaкции =%5im
             }
             if (flPopr == 0) {
                 sprintf_P(lcd_buffer, PSTR("%s%c"), lcd_buffer, '*');
             }
 
-            my_lcdprint(lcd_buffer);
-            sprintf_P(lcd_buffer, PSTR("\251\264o\273 \252pa\272\345-\272a = %3i"), (int)AngleFractionRect[nPopr]);
+            my_lcdprint(lcd_buffer, 1); //20.04.21
+
             //угол фракц-ка =
-            if (flPopr == 1)
-                sprintf_P(lcd_buffer, PSTR("%s%c"), lcd_buffer, '*');
+            if (flPopr == 1) //20.04.21 if (flPopr == 1)
+                //sprintf_P(lcd_buffer, PSTR("%s%c"), lcd_buffer, '*');//20.04.21
+                sprintf_P(lcd_buffer, PSTR("Угoл поворота = %3i*"), (int)AngleFractionRect[nPopr]); //20.04.21 "Угoл Фpaкц-кa =
+            else
+                sprintf_P(lcd_buffer, PSTR("Угoл поворота = %3i"), (int)AngleFractionRect[nPopr]); //20.04.21 "Угoл Фpaкц-кa =
         }
-        lcd.setCursor(0, 2);
-        my_lcdprint(lcd_buffer);
+        //dirtyTrickSetCursor(0, 2);
+        my_lcdprint(lcd_buffer, 2);
         break;
     case 314:
-        sprintf_P(lcd_buffer, PSTR("PAC\250PE\340-H\245E MO\342HOCT\245")); //РАСПРЕД-НИЕ МОЩНОСТИ
+        sprintf_P(lcd_buffer, PSTR("PACПPEД-HИE MOЩHOCTИ")); //РАСПРЕД-НИЕ МОЩНОСТИ
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
+
+        dirtyTrickSetCursor(0, 3);
         if (nPopr == 0)
-            sprintf_P(lcd_buffer, PSTR("\252a\267a1")); //фаза 1
+            sprintf_P(lcd_buffer, PSTR("Фaзa1")); //фаза 1
         if (nPopr == 1)
-            sprintf_P(lcd_buffer, PSTR("        \252a\267a2")); //фаза 2
+            sprintf_P(lcd_buffer, PSTR("        Фaзa2")); //фаза 2
         if (nPopr == 2)
-            sprintf_P(lcd_buffer, PSTR("               \252a\267a3")); //фаза 3
+            sprintf_P(lcd_buffer, PSTR("               Фaзa3")); //фаза 3
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
+
+        dirtyTrickSetCursor(0, 2);
         sprintf_P(lcd_buffer, PSTR("%4i    %4i    %4i"), (int)PowerPhase[0], (int)PowerPhase[1], (int)PowerPhase[2]);
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\250O \252A\244AM:")); //ПО ФАЗАМ:
-        my_lcdprint(lcd_buffer);
+
+        sprintf_P(lcd_buffer, PSTR("ПO ФAЗAM:")); //ПО ФАЗАМ:
+        my_lcdprint(lcd_buffer, 1);
         break;
     case 315:
-        sprintf_P(lcd_buffer, PSTR("PAC\250PE\340-H\245E MO\342HOCT\245")); //РАСПРЕД-НИЕ МОЩНОСТИ
+        sprintf_P(lcd_buffer, PSTR("PACПPEД-HИE MOЩHOCTИ")); //РАСПРЕД-НИЕ МОЩНОСТИ
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 3);
+        dirtyTrickSetCursor(0, 3);
         if (nPopr == 0)
-            sprintf_P(lcd_buffer, PSTR("\252a\267a1")); //фаза 1
+            sprintf_P(lcd_buffer, PSTR("Фaзa1")); //фаза 1
         if (nPopr == 1)
-            sprintf_P(lcd_buffer, PSTR("      \252a\267a2")); //фаза 2
+            sprintf_P(lcd_buffer, PSTR("      Фaзa2")); //фаза 2
         if (nPopr == 2)
-            sprintf_P(lcd_buffer, PSTR("            \252a\267a3")); //фаза 3
+            sprintf_P(lcd_buffer, PSTR("            Фaзa3")); //фаза 3
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 2);
+        dirtyTrickSetCursor(0, 2);
         sprintf_P(lcd_buffer, PSTR("%3i   %3i   %3i =%3i"), (int)KtPhase[0], (int)KtPhase[1], (int)KtPhase[2], (int)KtPhase[0] + KtPhase[1] + KtPhase[2]);
         my_lcdprint(lcd_buffer);
-        sprintf_P(lcd_buffer, PSTR("\250O \252A\244AM B \250PO\341EHTAX")); //ПО ФАЗАМ В ПРОЦЕНТАХ
-        my_lcdprint(lcd_buffer);
+        sprintf_P(lcd_buffer, PSTR("ПO ФAЗAM B ПPOЦEHTAX")); //ПО ФАЗАМ В ПРОЦЕНТАХ
+        my_lcdprint(lcd_buffer, 1);
         break;
 #if ENABLE_SENSOR_SORTING
-    case 316:
+    case 316: //13.04.21
         // Печатаем номера всех наших сенсоров
         for (int i = 0, n = 0; i < MAX_DS1820; i++) {
             n += sprintf_P(lcd_buffer + n, (i > 0) ? PSTR(" %02d") : PSTR("%02d"), (int)ds1820_nums[i] + 1);
         }
         my_lcdprint(lcd_buffer);
-        lcd.setCursor(0, 1);
+        //lcd.setCursor(0, 1);         //13.04.21
+        dirtyTrickSetCursor(0, 1); //13.04.21
         j = 0;
         while (j < (nPopr)*3 + 1) {
             lcd_buffer[j] = ' ';
@@ -2831,26 +3170,6 @@ void DisplayData() //************ РЕЖИМ ПРОСМОТРА ****************
     default:
         break;
     }
-
-    //
-    //  lcd.setCursor(0, 0);
-    //  my_lcdprint(Seconds);
-    //  lcd.setCursor(5, 0);
-    //  my_lcdprint(MaxVoltsOut);
-    //  lcd.setCursor(9, 0);
-    //  my_lcdprint((long)MaxVoltsOut*707/1000);
-    //  lcd.setCursor(0, 1);
-    //  my_lcdprint(index_input);
-    //  lcd.setCursor(5, 1);
-    //  my_lcdprint(TimeOpenTriac);
-    //  NeedDisplaying=false;
-    //  lcd.setCursor(10, 1);
-    //  my_lcdprint(TicZero);
-    // предупреждения теперь выводим на всех страницах.
-
-    if (flNumStrPrint < 2) {
-        lcd_buffer[0] = 0;
-        my_lcdprint(lcd_buffer);
-    }
-    NeedDisplaying = false;
 }
+
+#endif // USE_CYRILLIC_DISPLAY
