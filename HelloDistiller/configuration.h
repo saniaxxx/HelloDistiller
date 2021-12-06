@@ -54,7 +54,7 @@
 #define UROVEN_ALARM 1 // Датчик уровня переводим в цифровой режим
 #endif
 
-#define USE_GAS_SENSOR 0 // Пин для анализа датчика загазованности (спирта)
+#define USE_GAS_SENSOR 1 // Пин для анализа датчика загазованности (спирта)
 #define UROVEN_GAS_SENSOR 1 // уровень газа переводим в цифровой режим
 
 #if SIMPLED_VERSION != 6
